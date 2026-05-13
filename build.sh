@@ -55,24 +55,37 @@ cd "${BUILD_WORK}"
 # --- Configure live-build ----------------------------------------------------
 log "Configuring live-build..."
 
-lb config \
-    --distribution "${BASE_CODENAME}" \
-    --architectures "${BASE_ARCH}" \
-    --mirror-bootstrap "${BASE_MIRROR}" \
-    --mirror-chroot "${BASE_MIRROR}" \
-    --mirror-chroot-security "${BASE_SECURITY_MIRROR}" \
-    --binary-images iso-hybrid \
-    --iso-application "${DISTRO_NAME}" \
-    --iso-volume "${ISO_LABEL}" \
-    --bootappend-live "boot=live components hostname=${DEFAULT_HOSTNAME} username=${DEFAULT_USER}" \
-    --memtest none \
-    --firmware-binary true \
-    --firmware-chroot true \
-    --apt-recommends false \
-    --security true \
-    --updates true \
-    --backports false \
+# Detect live-build version for flag compatibility
+LB_VERSION=$(lb --version 2>/dev/null | head -1 | grep -oP '[\d]+' | head -1 || echo "5")
+log "live-build major version: ${LB_VERSION}"
+
+LB_ARGS=(
+    --distribution "${BASE_CODENAME}"
+    --architectures "${BASE_ARCH}"
+    --mirror-bootstrap "${BASE_MIRROR}"
+    --mirror-chroot "${BASE_MIRROR}"
+    --mirror-chroot-security "${BASE_SECURITY_MIRROR}"
+    --binary-images iso-hybrid
+    --iso-application "${DISTRO_NAME}"
+    --iso-volume "${ISO_LABEL}"
+    --bootappend-live "boot=live components hostname=${DEFAULT_HOSTNAME} username=${DEFAULT_USER}"
+    --memtest none
+    --apt-recommends false
     --cache true
+)
+
+# These flags exist in live-build 4.x (Debian Bullseye and older) but were
+# removed in 5.x+ (Debian Bookworm / Ubuntu 24.04+)
+if lb config --help 2>&1 | grep -q -- '--updates'; then
+    LB_ARGS+=(--security true --updates true --backports false)
+fi
+
+# Firmware flags changed across versions
+if lb config --help 2>&1 | grep -q -- '--firmware-binary'; then
+    LB_ARGS+=(--firmware-binary true --firmware-chroot true)
+fi
+
+lb config "${LB_ARGS[@]}"
 
 # --- Copy package lists ------------------------------------------------------
 log "Installing package lists..."
