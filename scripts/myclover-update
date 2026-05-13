@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# =============================================================================
+# myclover-update -- Update mycloverOS + CloverStack modules
+# =============================================================================
+set -euo pipefail
+
+LOG="/var/log/cloverstack/update.log"
+mkdir -p "$(dirname "${LOG}")"
+
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "${LOG}"; }
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Must run as root: sudo myclover-update"
+    exit 1
+fi
+
+echo ""
+echo "============================================"
+echo "  mycloverOS System Update"
+echo "============================================"
+echo ""
+
+# --- System packages ---------------------------------------------------------
+log "Updating system packages..."
+apt-get update
+apt-get upgrade -y
+apt-get autoremove -y
+
+# --- Docker images -----------------------------------------------------------
+log "Updating CloverStack containers..."
+CONTAINERS=$(docker ps --format '{{.Image}}' 2>/dev/null | sort -u)
+for img in ${CONTAINERS}; do
+    log "  Pulling latest: ${img}"
+    docker pull "${img}" 2>/dev/null || log "  Failed to pull ${img}"
+done
+
+# --- Ollama models -----------------------------------------------------------
+log "Updating Ollama models..."
+MODELS=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
+for model in ${MODELS}; do
+    log "  Updating: ${model}"
+    ollama pull "${model}" 2>/dev/null || log "  Failed to update ${model}"
+done
+
+# --- Restart updated containers ----------------------------------------------
+log "Recreating containers with updated images..."
+for compose_dir in /opt/cloverstack/*/; do
+    if [[ -f "${compose_dir}/docker-compose.yml" ]]; then
+        log "  Updating: $(basename "${compose_dir}")"
+        cd "${compose_dir}" && docker compose up -d 2>/dev/null || true
+    fi
+done
+
+# --- Kernel check ------------------------------------------------------------
+RUNNING_KERNEL=$(uname -r)
+INSTALLED_KERNEL=$(dpkg -l | grep "linux-image-[0-9]" | sort -V | tail -1 | awk '{print $3}')
+if [[ "${RUNNING_KERNEL}" != *"${INSTALLED_KERNEL}"* ]]; then
+    log "New kernel available. Reboot recommended."
+fi
+
+log "=== Update Complete ==="
