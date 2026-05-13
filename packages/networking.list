@@ -1,0 +1,45 @@
+# =============================================================================
+# mycloverOS Networking Packages
+# Extended networking for monitoring, mesh, and VPN
+# =============================================================================
+
+# --- VPN ---
+wireguard
+wireguard-tools
+openvpn
+
+# --- Mesh / routing ---
+batctl
+avahi-daemon
+avahi-utils
+
+# --- Advanced networking ---
+vlan
+ifenslave
+hostapd
+dnsmasq
+
+# --- Wireless ---
+wireless-tools
+iw
+wpasupplicant
+rfkill
+
+# --- Firewall ---
+nftables
+iptables-persistent
+
+# --- Traffic analysis ---
+iftop
+nethogs
+bmon
+mtr-tiny
+traceroute
+whois
+
+# --- SNMP ---
+snmp
+snmpd
+
+# --- LLDP ---
+lldpd
