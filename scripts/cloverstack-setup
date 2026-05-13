@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cloverstack-setup -- CloverStack service orchestrator
+# Manages Docker Compose stacks for each CloverStack module
+# =============================================================================
+set -euo pipefail
+
+CLOVERSTACK_ROOT="/opt/cloverstack"
+CLOVERSTACK_CONFIG="/etc/myclover"
+MODULES_DIR="${CLOVERSTACK_CONFIG}/modules.d"
+
+log() { echo "[cloverstack] $*"; }
+err() { echo "[cloverstack] ERROR: $*" >&2; }
+
+usage() {
+    cat <<EOF
+Usage: cloverstack-ctl <command> [module]
+
+Commands:
+  status              Show status of all modules
+  enable <module>     Enable a module
+  disable <module>    Disable a module
+  start <module>      Start a module
+  stop <module>       Stop a module
+  restart <module>    Restart a module
+  logs <module>       Show module logs
+  list                List all available modules
+  info <module>       Show module info
+
+Modules:
+  netmon              Network monitoring (Zabbix)
+  sentrylog           Log management (Graylog + Wazuh)
+  myclover-vault      Password manager (Vaultwarden)
+  chappie             AI assistant (Ollama)
+  clovermedia         Smart TV + streaming + DJ
+  cloversign          Digital signage
+  cloverguard         Web proxy + content filter
+  clovermine          Crypto mining
+  cloverpos           Point of sale
+  cloverdesign        AI design studio
+  cloverbot           AI support chatbot
+  cloverdrone         UAV control
+  clovermesh          Distributed mesh
+  clovermesh-radio    LoRa mesh comms
+  streamserver        Live streaming platform
+
+EOF
+}
+
+cmd_status() {
+    echo ""
+    echo "CloverStack Module Status"
+    echo "========================="
+    echo ""
+    printf "%-20s %-10s %-10s\n" "MODULE" "ENABLED" "RUNNING"
+    printf "%-20s %-10s %-10s\n" "------" "-------" "-------"
+
+    for mod_dir in "${CLOVERSTACK_ROOT}/modules/"*/; do
+        [[ -d "${mod_dir}" ]] || continue
+        mod=$(basename "${mod_dir}")
+        
+        if [[ -f "${MODULES_DIR}/${mod}.enabled" ]]; then
+            enabled="yes"
+        else
+            enabled="no"
+        fi
+
+        if docker compose -f "${mod_dir}/docker-compose.yml" ps --status running 2>/dev/null | grep -q "running"; then
+            running="yes"
+        else
+            running="no"
+        fi
+
+        printf "%-20s %-10s %-10s\n" "${mod}" "${enabled}" "${running}"
+    done
+    echo ""
+}
+
+cmd_enable() {
+    local mod="$1"
+    mkdir -p "${MODULES_DIR}"
+    touch "${MODULES_DIR}/${mod}.enabled"
+    log "Enabled: ${mod}"
+    cmd_start "${mod}"
+}
+
+cmd_disable() {
+    local mod="$1"
+    cmd_stop "${mod}"
+    rm -f "${MODULES_DIR}/${mod}.enabled"
+    log "Disabled: ${mod}"
+}
+
+cmd_start() {
+    local mod="$1"
+    local compose="${CLOVERSTACK_ROOT}/modules/${mod}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        log "Starting: ${mod}"
+        docker compose -f "${compose}" up -d
+    else
+        err "No compose file for ${mod}"
+        err "Module may need to be installed first"
+    fi
+}
+
+cmd_stop() {
+    local mod="$1"
+    local compose="${CLOVERSTACK_ROOT}/modules/${mod}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        log "Stopping: ${mod}"
+        docker compose -f "${compose}" down
+    fi
+}
+
+cmd_restart() {
+    local mod="$1"
+    cmd_stop "${mod}"
+    cmd_start "${mod}"
+}
+
+cmd_logs() {
+    local mod="$1"
+    local compose="${CLOVERSTACK_ROOT}/modules/${mod}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        docker compose -f "${compose}" logs -f --tail=100
+    else
+        err "No compose file for ${mod}"
+    fi
+}
+
+cmd_list() {
+    echo ""
+    echo "Available CloverStack Modules"
+    echo "============================="
+    echo ""
+    echo "  netmon            Network monitoring (Zabbix)"
+    echo "  sentrylog         Log management (Graylog + Wazuh)"
+    echo "  myclover-vault    Password manager (Vaultwarden)"
+    echo "  chappie           AI assistant (Ollama)"
+    echo "  clovermedia       Smart TV + streaming + DJ"
+    echo "  cloversign        Digital signage"
+    echo "  cloverguard       Web proxy + content filter"
+    echo "  clovermine        Crypto mining"
+    echo "  cloverpos         Point of sale"
+    echo "  cloverdesign      AI design studio"
+    echo "  cloverbot         AI support chatbot"
+    echo "  cloverdrone       UAV control"
+    echo "  clovermesh        Distributed mesh"
+    echo "  clovermesh-radio  LoRa mesh comms"
+    echo "  streamserver      Live streaming platform"
+    echo ""
+}
+
+# --- Symlink: cloverstack-ctl -> cloverstack-setup ---------------------------
+# Main dispatch
+COMMAND="${1:-}"
+MODULE="${2:-}"
+
+case "${COMMAND}" in
+    status)     cmd_status ;;
+    enable)     [[ -n "${MODULE}" ]] && cmd_enable "${MODULE}" || usage ;;
+    disable)    [[ -n "${MODULE}" ]] && cmd_disable "${MODULE}" || usage ;;
+    start)      [[ -n "${MODULE}" ]] && cmd_start "${MODULE}" || usage ;;
+    stop)       [[ -n "${MODULE}" ]] && cmd_stop "${MODULE}" || usage ;;
+    restart)    [[ -n "${MODULE}" ]] && cmd_restart "${MODULE}" || usage ;;
+    logs)       [[ -n "${MODULE}" ]] && cmd_logs "${MODULE}" || usage ;;
+    list)       cmd_list ;;
+    info)       [[ -n "${MODULE}" ]] && log "Info for ${MODULE} (TODO)" || usage ;;
+    *)          usage ;;
+esac
