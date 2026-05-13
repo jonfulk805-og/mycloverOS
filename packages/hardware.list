@@ -1,0 +1,41 @@
+# =============================================================================
+# mycloverOS Hardware Packages
+# Drivers, firmware, and hardware support
+# =============================================================================
+
+# --- Firmware ---
+firmware-linux-free
+# firmware-linux-nonfree  # Enable in non-free builds
+# firmware-iwlwifi        # Intel Wi-Fi
+# firmware-realtek        # Realtek NICs + Wi-Fi
+# firmware-atheros        # Atheros Wi-Fi
+# firmware-misc-nonfree   # Various
+
+# --- Storage controllers ---
+mdadm
+multipath-tools
+sg3-utils
+hdparm
+sdparm
+
+# --- USB ---
+usbutils
+usb-modeswitch
+usb-modeswitch-data
+
+# --- Serial / industrial ---
+picocom
+minicom
+setserial
+
+# --- Sensors ---
+lm-sensors
+fancontrol
+
+# --- IPMI / BMC ---
+ipmitool
+freeipmi-tools
+
+# --- EFI ---
+efibootmgr
+grub-efi-amd64
