@@ -1,0 +1,105 @@
+# =============================================================================
+# mycloverOS Base Packages
+# Included in ALL editions
+# =============================================================================
+
+# --- Core system ---
+systemd
+systemd-sysv
+dbus
+udev
+init
+
+# --- Shell & utilities ---
+bash
+bash-completion
+coreutils
+findutils
+grep
+gawk
+sed
+less
+file
+tree
+htop
+btop
+nano
+vim-tiny
+tmux
+screen
+curl
+wget
+rsync
+zip
+unzip
+xz-utils
+pigz
+
+# --- Filesystem ---
+e2fsprogs
+xfsprogs
+btrfs-progs
+dosfstools
+ntfs-3g
+parted
+gdisk
+lvm2
+cryptsetup
+mdadm
+
+# --- Networking core ---
+iproute2
+iputils-ping
+net-tools
+isc-dhcp-client
+network-manager
+dnsutils
+nmap
+tcpdump
+iptables
+nftables
+ethtool
+bridge-utils
+
+# --- SSH ---
+openssh-server
+openssh-client
+
+# --- Security ---
+sudo
+apparmor
+apparmor-utils
+fail2ban
+ufw
+ca-certificates
+gnupg
+
+# --- Python (for CloverStack scripts) ---
+python3
+python3-pip
+python3-venv
+
+# --- Container runtime ---
+docker.io
+docker-compose
+containerd
+
+# --- System monitoring ---
+lm-sensors
+smartmontools
+sysstat
+iotop
+
+# --- Hardware/firmware ---
+pciutils
+usbutils
+dmidecode
+lshw
+inxi
+
+# --- Time ---
+chrony
+
+# --- Logging ---
+rsyslog
+logrotate
