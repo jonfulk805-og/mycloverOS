@@ -1,0 +1,56 @@
+# =============================================================================
+# mycloverOS Desktop Packages
+# KDE Plasma desktop environment (Desktop + Field Laptop editions)
+# =============================================================================
+
+# --- KDE Plasma ---
+kde-plasma-desktop
+sddm
+plasma-workspace
+plasma-nm
+plasma-pa
+kde-spectacle
+dolphin
+konsole
+kate
+ark
+gwenview
+okular
+
+# --- Display server ---
+xorg
+xserver-xorg-core
+xserver-xorg-input-all
+xserver-xorg-video-all
+
+# --- Audio ---
+pipewire
+pipewire-pulse
+wireplumber
+
+# --- Fonts ---
+fonts-liberation
+fonts-dejavu-core
+fonts-noto
+fonts-noto-color-emoji
+
+# --- Browser ---
+firefox-esr
+
+# --- Themes & appearance ---
+breeze
+breeze-icon-theme
+breeze-cursor-theme
+breeze-gtk-theme
+
+# --- Accessibility ---
+at-spi2-core
+
+# --- File management ---
+thunar
+gvfs
+gvfs-backends
+
+# --- Print support ---
+cups
+cups-browsed
