@@ -1,0 +1,13 @@
+
+  Welcome to mycloverOS -- The OS that powers CloverStack
+  --------------------------------------------------------
+
+  Quick commands:
+    cloverstack-ctl status     Show module status
+    cloverstack-ctl list       List available modules
+    cloverstack-ctl enable X   Enable a module
+    myclover-update            Update system + modules
+
+  Dashboard:  https://localhost:9443 (Portainer)
+  Docs:       https://myclover.tech/docs
+
