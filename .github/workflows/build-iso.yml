@@ -1,0 +1,28 @@
+name: Build mycloverOS ISO
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: 'Edition to build'
+        required: true
+        default: 'server'
+        type: choice
+        options: [server, desktop, micro, kiosk]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y live-build debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools
+      - name: Build ISO
+        run: sudo ./build.sh ${{ github.event.inputs.edition || 'server' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mycloverOS-iso
+          path: build/*.iso
