@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# =============================================================================
+# myclover-install -- Install mycloverOS to disk
+# =============================================================================
+set -euo pipefail
+
+source /etc/myclover/distro.conf 2>/dev/null || {
+    DISTRO_FULLNAME="mycloverOS"
+    DEFAULT_USER="clover"
+    DEFAULT_HOSTNAME="cloverstack"
+}
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[install]${NC} $*"; }
+warn() { echo -e "${YELLOW}[install]${NC} $*"; }
+err()  { echo -e "${RED}[install]${NC} $*" >&2; }
+ask()  { echo -en "${CYAN}[install]${NC} $* "; }
+
+# --- Preflight ---------------------------------------------------------------
+if [[ $EUID -ne 0 ]]; then
+    err "Must run as root: sudo myclover-install"
+    exit 1
+fi
+
+echo ""
+echo -e "${GREEN}============================================${NC}"
+echo -e "${GREEN}  ${DISTRO_FULLNAME} Installer${NC}"
+echo -e "${GREEN}============================================${NC}"
+echo ""
+
+# --- Disk selection ----------------------------------------------------------
+log "Available disks:"
+echo ""
+lsblk -d -o NAME,SIZE,MODEL,TRAN | grep -v "loop\|sr\|ram"
+echo ""
+
+ask "Target disk (e.g., sda, nvme0n1):"
+read -r TARGET_DISK
+
+if [[ ! -b "/dev/${TARGET_DISK}" ]]; then
+    err "Device /dev/${TARGET_DISK} not found"
+    exit 1
+fi
+
+DISK_SIZE=$(lsblk -b -d -o SIZE "/dev/${TARGET_DISK}" | tail -1 | tr -d ' ')
+DISK_GB=$((DISK_SIZE / 1073741824))
+
+warn "WARNING: This will ERASE ALL DATA on /dev/${TARGET_DISK} (${DISK_GB} GB)"
+ask "Type 'yes' to continue:"
+read -r CONFIRM
+
+if [[ "${CONFIRM}" != "yes" ]]; then
+    log "Aborted."
+    exit 0
+fi
+
+# --- Hostname ----------------------------------------------------------------
+ask "Hostname [${DEFAULT_HOSTNAME}]:"
+read -r HOSTNAME_INPUT
+HOSTNAME="${HOSTNAME_INPUT:-${DEFAULT_HOSTNAME}}"
+
+# --- User --------------------------------------------------------------------
+ask "Username [${DEFAULT_USER}]:"
+read -r USER_INPUT
+USERNAME="${USER_INPUT:-${DEFAULT_USER}}"
+
+ask "Password for ${USERNAME}:"
+read -rs PASSWORD
+echo ""
+
+# --- Partitioning ------------------------------------------------------------
+log "Partitioning /dev/${TARGET_DISK}..."
+
+# Detect UEFI or BIOS
+if [[ -d /sys/firmware/efi ]]; then
+    BOOT_MODE="uefi"
+    log "Detected UEFI boot mode"
+else
+    BOOT_MODE="bios"
+    log "Detected BIOS/Legacy boot mode"
+fi
+
+# Wipe and partition
+wipefs -a "/dev/${TARGET_DISK}"
+
+if [[ "${BOOT_MODE}" == "uefi" ]]; then
+    parted -s "/dev/${TARGET_DISK}" \
+        mklabel gpt \
+        mkpart ESP fat32 1MiB 512MiB \
+        set 1 esp on \
+        mkpart primary ext4 512MiB 100%
+
+    # Determine partition naming
+    if [[ "${TARGET_DISK}" == nvme* ]]; then
+        PART_PREFIX="/dev/${TARGET_DISK}p"
+    else
+        PART_PREFIX="/dev/${TARGET_DISK}"
+    fi
+
+    mkfs.fat -F32 "${PART_PREFIX}1"
+    mkfs.ext4 -L "mycloverOS" "${PART_PREFIX}2"
+
+    BOOT_PART="${PART_PREFIX}1"
+    ROOT_PART="${PART_PREFIX}2"
+else
+    parted -s "/dev/${TARGET_DISK}" \
+        mklabel msdos \
+        mkpart primary ext4 1MiB 100% \
+        set 1 boot on
+
+    if [[ "${TARGET_DISK}" == nvme* ]]; then
+        PART_PREFIX="/dev/${TARGET_DISK}p"
+    else
+        PART_PREFIX="/dev/${TARGET_DISK}"
+    fi
+
+    mkfs.ext4 -L "mycloverOS" "${PART_PREFIX}1"
+
+    BOOT_PART=""
+    ROOT_PART="${PART_PREFIX}1"
+fi
+
+# --- Mount and copy ----------------------------------------------------------
+log "Mounting filesystems..."
+INSTALL_ROOT="/mnt/myclover-install"
+mkdir -p "${INSTALL_ROOT}"
+mount "${ROOT_PART}" "${INSTALL_ROOT}"
+
+if [[ -n "${BOOT_PART}" ]]; then
+    mkdir -p "${INSTALL_ROOT}/boot/efi"
+    mount "${BOOT_PART}" "${INSTALL_ROOT}/boot/efi"
+fi
+
+log "Copying live filesystem to disk (this takes a few minutes)..."
+rsync -aAXH --exclude={"/proc/*","/sys/*","/dev/*","/run/*","/tmp/*","/mnt/*","/media/*","/lost+found","/live"} / "${INSTALL_ROOT}/"
+
+# --- Configure installed system ----------------------------------------------
+log "Configuring installed system..."
+
+# Hostname
+echo "${HOSTNAME}" > "${INSTALL_ROOT}/etc/hostname"
+cat > "${INSTALL_ROOT}/etc/hosts" <<EOF
+127.0.0.1   localhost
+127.0.1.1   ${HOSTNAME}
+
+::1         localhost ip6-localhost ip6-loopback
+ff02::1     ip6-allnodes
+ff02::2     ip6-allrouters
+EOF
+
+# Fstab
+ROOT_UUID=$(blkid -s UUID -o value "${ROOT_PART}")
+cat > "${INSTALL_ROOT}/etc/fstab" <<EOF
+# mycloverOS fstab
+UUID=${ROOT_UUID}  /         ext4  errors=remount-ro  0  1
+EOF
+
+if [[ -n "${BOOT_PART}" ]]; then
+    BOOT_UUID=$(blkid -s UUID -o value "${BOOT_PART}")
+    echo "UUID=${BOOT_UUID}  /boot/efi  vfat  umask=0077  0  1" >> "${INSTALL_ROOT}/etc/fstab"
+fi
+
+# Create user
+chroot "${INSTALL_ROOT}" useradd -m -s /bin/bash -G sudo,docker "${USERNAME}" 2>/dev/null || true
+echo "${USERNAME}:${PASSWORD}" | chroot "${INSTALL_ROOT}" chpasswd
+
+# Remove live-boot packages
+chroot "${INSTALL_ROOT}" apt-get remove -y live-boot live-config live-tools 2>/dev/null || true
+
+# --- Bootloader --------------------------------------------------------------
+log "Installing bootloader..."
+
+mount --bind /dev "${INSTALL_ROOT}/dev"
+mount --bind /proc "${INSTALL_ROOT}/proc"
+mount --bind /sys "${INSTALL_ROOT}/sys"
+
+if [[ "${BOOT_MODE}" == "uefi" ]]; then
+    chroot "${INSTALL_ROOT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mycloverOS
+else
+    chroot "${INSTALL_ROOT}" grub-install "/dev/${TARGET_DISK}"
+fi
+
+chroot "${INSTALL_ROOT}" update-grub
+
+# --- Cleanup -----------------------------------------------------------------
+log "Cleaning up..."
+umount "${INSTALL_ROOT}/dev" "${INSTALL_ROOT}/proc" "${INSTALL_ROOT}/sys"
+[[ -n "${BOOT_PART}" ]] && umount "${INSTALL_ROOT}/boot/efi"
+umount "${INSTALL_ROOT}"
+
+# --- Mark for first-boot provisioning ----------------------------------------
+touch /var/lib/cloverstack/.first-boot 2>/dev/null || true
+
+echo ""
+log "============================================"
+log "  INSTALLATION COMPLETE"
+log "  Remove the USB drive and reboot."
+log "  CloverStack will auto-provision on first boot."
+log "============================================"
+echo ""
