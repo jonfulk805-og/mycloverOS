@@ -1,0 +1,40 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- CloverStack setup inside live environment
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Running CloverStack chroot hook..."
+
+# --- Create CloverStack directory structure ----------------------------------
+mkdir -p /opt/cloverstack/{modules,data,config,backups}
+mkdir -p /var/lib/cloverstack
+mkdir -p /var/log/cloverstack
+mkdir -p /etc/myclover/modules.d
+
+# --- Create cloverstack-ctl symlink -----------------------------------------
+ln -sf /usr/local/bin/cloverstack-setup /usr/local/bin/cloverstack-ctl
+
+# --- Enable services ---------------------------------------------------------
+systemctl enable ssh 2>/dev/null || true
+systemctl enable myclover-provision 2>/dev/null || true
+
+# --- Set first-boot flag -----------------------------------------------------
+touch /var/lib/cloverstack/.first-boot
+
+# --- OS branding -------------------------------------------------------------
+# Override os-release
+cat > /etc/os-release <<'EOF'
+PRETTY_NAME="mycloverOS 0.1.0 (seedling)"
+NAME="mycloverOS"
+VERSION_ID="0.1.0"
+VERSION="0.1.0 (seedling)"
+VERSION_CODENAME=seedling
+ID=myclover
+ID_LIKE=debian
+HOME_URL="https://myclover.tech"
+SUPPORT_URL="https://myclover.tech/support"
+BUG_REPORT_URL="https://github.com/jonfulk805-og/mycloverOS/issues"
+EOF
+
+echo "[mycloverOS] CloverStack chroot hook complete"
