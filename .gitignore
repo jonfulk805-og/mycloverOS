@@ -1,0 +1,30 @@
+# Build output
+build/
+*.iso
+*.iso.sha256
+
+# live-build working directories
+.build/
+cache/
+chroot/
+binary/
+binary.contents
+binary.packages
+source/
+
+# OS artifacts
+*.img
+*.qcow2
+*.vmdk
+*.ova
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
