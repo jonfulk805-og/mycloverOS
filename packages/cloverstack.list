@@ -1,0 +1,48 @@
+# =============================================================================
+# mycloverOS CloverStack Packages
+# Dependencies for the CloverStack platform modules
+# =============================================================================
+
+# --- Web server / reverse proxy ---
+nginx
+
+# --- Database ---
+postgresql
+postgresql-client
+redis-server
+
+# --- Docker (CloverStack modules run as containers) ---
+# docker.io already in base.list
+
+# --- Traefik + Portainer via Docker, not packaged ---
+
+# --- WireGuard (CloverMesh) ---
+wireguard
+wireguard-tools
+
+# --- Backup (Restic + MinIO) ---
+restic
+
+# --- Git (for config management) ---
+git
+
+# --- Cron ---
+cron
+
+# --- Certificate management ---
+certbot
+
+# --- Monitoring dependencies ---
+snmp
+snmpd
+snmp-mibs-downloader
+
+# --- Log pipeline dependencies ---
+apt-transport-https
+
+# --- Build essentials (for compiling modules) ---
+build-essential
+pkg-config
+libssl-dev
+libffi-dev
+python3-dev
