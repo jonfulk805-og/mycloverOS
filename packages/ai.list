@@ -1,0 +1,24 @@
+# =============================================================================
+# mycloverOS AI Packages
+# AI/ML stack for Ollama and related services
+# =============================================================================
+
+# --- GPU support ---
+# NVIDIA drivers installed via hooks (non-free-firmware repo)
+# nvidia-driver
+# nvidia-cuda-toolkit
+
+# --- Python ML stack ---
+python3-numpy
+python3-scipy
+
+# --- Ollama ---
+# Installed via official install script in build hook
+# curl -fsSL https://ollama.com/install.sh | sh
+
+# --- FFmpeg (for media AI, ComfyUI, video processing) ---
+ffmpeg
+
+# --- Image processing ---
+imagemagick
+python3-pil
