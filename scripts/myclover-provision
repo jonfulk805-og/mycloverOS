@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# =============================================================================
+# myclover-provision -- First-boot provisioning for CloverStack
+# Runs once after install, sets up all services
+# =============================================================================
+set -euo pipefail
+
+source /etc/myclover/distro.conf 2>/dev/null || true
+
+LOG="/var/log/cloverstack/provision.log"
+mkdir -p "$(dirname "${LOG}")"
+
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "${LOG}"; }
+
+FIRST_BOOT_FLAG="/var/lib/cloverstack/.first-boot"
+
+# Only run on first boot
+if [[ ! -f "${FIRST_BOOT_FLAG}" ]]; then
+    exit 0
+fi
+
+log "=== mycloverOS First Boot Provisioning ==="
+
+# --- Create directories ------------------------------------------------------
+log "Creating CloverStack directories..."
+mkdir -p /opt/cloverstack/{modules,data,config,backups}
+mkdir -p /var/lib/cloverstack
+mkdir -p /var/log/cloverstack
+mkdir -p /etc/myclover/modules.d
+
+# --- Docker setup ------------------------------------------------------------
+log "Configuring Docker..."
+systemctl enable docker
+systemctl start docker
+
+# Create CloverStack Docker network
+docker network create cloverstack 2>/dev/null || true
+
+# --- Install Ollama ----------------------------------------------------------
+log "Installing Ollama AI Engine..."
+if ! command -v ollama &>/dev/null; then
+    curl -fsSL https://ollama.com/install.sh | sh
+fi
+systemctl enable ollama
+systemctl start ollama
+
+# Pull default model
+log "Pulling default AI model (${DEFAULT_AI_MODEL:-phi3:mini})..."
+ollama pull "${DEFAULT_AI_MODEL:-phi3:mini}" &
+
+# --- Install Portainer -------------------------------------------------------
+log "Deploying Portainer..."
+docker volume create portainer_data 2>/dev/null || true
+docker run -d \
+    --name portainer \
+    --restart=always \
+    -p 9443:9443 \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v portainer_data:/data \
+    --network cloverstack \
+    portainer/portainer-ce:latest 2>/dev/null || log "Portainer already running"
+
+# --- Install Traefik ---------------------------------------------------------
+log "Deploying Traefik reverse proxy..."
+mkdir -p /opt/cloverstack/traefik/{config,certs}
+
+cat > /opt/cloverstack/traefik/docker-compose.yml <<'EOF'
+version: "3.8"
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config:/etc/traefik
+      - ./certs:/certs
+    networks:
+      - cloverstack
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+
+networks:
+  cloverstack:
+    external: true
+EOF
+
+cd /opt/cloverstack/traefik && docker compose up -d 2>/dev/null || log "Traefik setup deferred"
+
+# --- Enable default modules --------------------------------------------------
+log "Enabling default CloverStack modules..."
+for mod in ${CLOVERSTACK_DEFAULT_MODULES:-netmon sentrylog myclover-vault chappie}; do
+    log "  Enabling: ${mod}"
+    touch "/etc/myclover/modules.d/${mod}.enabled"
+done
+
+# --- Generate machine ID -----------------------------------------------------
+log "Generating CloverStack machine identity..."
+MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || uuidgen)
+echo "${MACHINE_ID}" > /etc/myclover/machine-id
+
+# --- Setup cloverstack-ctl ---------------------------------------------------
+log "Installing cloverstack-ctl..."
+chmod +x /usr/local/bin/cloverstack-* 2>/dev/null || true
+
+# --- Network configuration ---------------------------------------------------
+log "Configuring networking..."
+systemctl enable NetworkManager 2>/dev/null || true
+systemctl enable ssh
+
+# WireGuard (if enabled)
+if [[ "${ENABLE_WIREGUARD:-true}" == "true" ]]; then
+    log "Preparing WireGuard..."
+    mkdir -p /etc/wireguard
+    wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey
+    chmod 600 /etc/wireguard/privatekey
+fi
+
+# --- Firewall ----------------------------------------------------------------
+log "Configuring firewall..."
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw allow 80/tcp    # HTTP
+ufw allow 443/tcp   # HTTPS
+ufw allow 9443/tcp  # Portainer
+ufw --force enable
+
+# --- Cleanup -----------------------------------------------------------------
+rm -f "${FIRST_BOOT_FLAG}"
+
+log "=== Provisioning Complete ==="
+log "Access CloverStack at: https://$(hostname -I | awk '{print $1}'):9443"
+log "Run 'cloverstack-ctl status' to check module status"
