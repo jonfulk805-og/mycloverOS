@@ -1,0 +1,14 @@
+[Unit]
+Description=mycloverOS First Boot Provisioning
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/cloverstack/.first-boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/myclover-provision
+RemainAfterExit=yes
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
