@@ -7,6 +7,9 @@ set -e
 echo "[mycloverOS] Installing Ollama..."
 
 # Install Ollama
+# zstd is required by Ollama installer for extraction
+apt-get install -y zstd
+
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Create systemd service (if not created by installer)
