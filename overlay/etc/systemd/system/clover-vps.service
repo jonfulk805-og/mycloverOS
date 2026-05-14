@@ -1,0 +1,27 @@
+[Unit]
+Description=CloverVPS Manager — White-label VPS Management
+Documentation=https://github.com/jonfulk805-og/mycloverOS
+After=network-online.target myclover-setup-wizard.service
+Wants=network-online.target
+ConditionPathExists=/etc/myclover/.setup-complete
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/myclover/clover-vps/clover-vps-manager.py
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/opt/myclover/clover-vps
+
+# Security hardening
+ProtectSystem=strict
+ReadWritePaths=/etc/myclover/clover-vps
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=clover-vps
+
+[Install]
+WantedBy=multi-user.target
