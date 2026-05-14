@@ -1,0 +1,604 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Security Hardening
+# Applies CIS Debian Benchmark-aligned hardening to the live filesystem.
+# Run order: 0200 (after Docker/Ollama installs, before final cleanup)
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Applying security hardening..."
+
+# =============================================================================
+# 1. KERNEL HARDENING (sysctl)
+# =============================================================================
+echo "[harden] Configuring kernel security parameters..."
+
+cat > /etc/sysctl.d/90-myclover-hardening.conf <<'SYSCTL'
+# =============================================================================
+# mycloverOS Kernel Hardening — CIS Benchmark Aligned
+# =============================================================================
+
+# --- Network hardening ---
+# Enable SYN flood protection
+net.ipv4.tcp_syncookies = 1
+
+# Disable IP source routing (prevents spoofing)
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+
+# Disable ICMP redirect acceptance (prevents MITM routing attacks)
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+
+# Don't send ICMP redirects (we're not a router)
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# Log martian packets (impossible source addresses)
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+
+# Ignore ICMP broadcast requests (prevent Smurf attacks)
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+# Ignore bogus ICMP error responses
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# Enable reverse path filtering (BCP38 anti-spoofing)
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+
+# Disable IP forwarding by default (Docker will enable per-bridge as needed)
+# NOTE: Docker overrides this for container networking, which is expected
+net.ipv4.ip_forward = 0
+
+# TCP hardening
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_max_syn_backlog = 4096
+
+# --- Memory protection ---
+# Enable ASLR (Address Space Layout Randomization) - maximum randomization
+kernel.randomize_va_space = 2
+
+# Restrict access to kernel pointers in /proc
+kernel.kptr_restrict = 2
+
+# Restrict dmesg access to root only
+kernel.dmesg_restrict = 1
+
+# Restrict eBPF to root
+kernel.unprivileged_bpf_disabled = 1
+
+# Disable unprivileged user namespaces (prevent container escape vectors)
+# NOTE: Docker runs as root so this doesn't affect CloverApps
+kernel.unprivileged_userns_clone = 0
+
+# Restrict perf_event access
+kernel.perf_event_paranoid = 3
+
+# --- Filesystem protection ---
+# Protect hardlinks and symlinks
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+fs.protected_fifos = 2
+fs.protected_regular = 2
+
+# Restrict core dumps
+fs.suid_dumpable = 0
+
+# --- Kernel module loading ---
+# After boot, prevent loading new kernel modules
+# Uncomment below for maximum lockdown (may break hotplug USB devices):
+# kernel.modules_disabled = 1
+
+# Restrict ptrace to parent processes only (anti-debugging attacks)
+kernel.yama.ptrace_scope = 1
+
+# Disable magic SysRq key (prevents keyboard-based attacks on physical access)
+kernel.sysrq = 0
+SYSCTL
+
+echo "[harden] Kernel hardening configured"
+
+# =============================================================================
+# 2. SSH HARDENING
+# =============================================================================
+echo "[harden] Hardening SSH configuration..."
+
+mkdir -p /etc/ssh/sshd_config.d
+
+cat > /etc/ssh/sshd_config.d/90-myclover-hardening.conf <<'SSH'
+# =============================================================================
+# mycloverOS SSH Hardening
+# =============================================================================
+
+# Authentication
+PermitRootLogin no
+MaxAuthTries 3
+MaxSessions 5
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+# Disable unused auth methods
+KerberosAuthentication no
+GSSAPIAuthentication no
+HostbasedAuthentication no
+
+# Network
+X11Forwarding no
+AllowTcpForwarding yes
+AllowAgentForwarding yes
+TCPKeepAlive yes
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Logging
+LogLevel VERBOSE
+SyslogFacility AUTH
+
+# Security
+StrictModes yes
+IgnoreRhosts yes
+UsePAM yes
+
+# Restrict ciphers to strong modern algorithms only
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+KexAlgorithms secdh521r1-sha512@libssh.org,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group18-sha512,diffie-hellman-group16-sha512
+
+# Display banner
+Banner /etc/issue.net
+SSH
+
+# Set warning banner
+cat > /etc/issue.net <<'BANNER'
+***************************************************************************
+                         AUTHORIZED ACCESS ONLY
+  This mycloverOS system is privately owned. Unauthorized access is
+  prohibited and will be prosecuted. All activity is logged and monitored.
+***************************************************************************
+BANNER
+
+echo "[harden] SSH hardened"
+
+# =============================================================================
+# 3. FIREWALL (UFW default-deny)
+# =============================================================================
+echo "[harden] Configuring firewall..."
+
+# Pre-configure UFW rules (activated on first boot by myclover-provision)
+mkdir -p /etc/ufw
+
+cat > /etc/ufw/user.rules.myclover <<'UFW'
+# mycloverOS default firewall rules — applied on first boot
+# SSH
+ufw allow 22/tcp comment 'SSH'
+# HTTP/HTTPS (Traefik reverse proxy)
+ufw allow 80/tcp comment 'HTTP'
+ufw allow 443/tcp comment 'HTTPS'
+# WireGuard VPN
+ufw allow 51820/udp comment 'WireGuard'
+# Ollama API (local only)
+ufw allow from 172.16.0.0/12 to any port 11434 proto tcp comment 'Ollama-Docker'
+# Docker bridge networks
+ufw allow from 172.16.0.0/12 comment 'Docker-internal'
+# Default deny everything else
+ufw default deny incoming
+ufw default allow outgoing
+UFW
+
+# Create first-boot firewall activation script
+cat > /usr/local/bin/myclover-firewall-init <<'FWINIT'
+#!/bin/bash
+# Activate UFW with mycloverOS defaults (run once on first boot)
+set -e
+if command -v ufw &>/dev/null; then
+    ufw --force reset
+    ufw allow 22/tcp comment 'SSH'
+    ufw allow 80/tcp comment 'HTTP'
+    ufw allow 443/tcp comment 'HTTPS'
+    ufw allow 51820/udp comment 'WireGuard'
+    ufw allow from 172.16.0.0/12 to any port 11434 proto tcp comment 'Ollama-Docker'
+    ufw allow from 172.16.0.0/12 comment 'Docker-internal'
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw --force enable
+    echo "[mycloverOS] Firewall activated"
+fi
+FWINIT
+chmod +x /usr/local/bin/myclover-firewall-init
+
+echo "[harden] Firewall pre-configured"
+
+# =============================================================================
+# 4. FAIL2BAN CONFIGURATION
+# =============================================================================
+echo "[harden] Configuring fail2ban..."
+
+mkdir -p /etc/fail2ban/jail.d
+
+cat > /etc/fail2ban/jail.d/myclover.conf <<'F2B'
+# mycloverOS fail2ban configuration
+
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+banaction = ufw
+backend = systemd
+
+# SSH brute-force protection
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+maxretry = 3
+bantime = 3600
+
+# Traefik auth failure protection
+[traefik-auth]
+enabled = true
+port = http,https
+filter = traefik-auth
+logpath = /var/log/cloverstack/traefik-access.log
+maxretry = 5
+bantime = 1800
+
+# Repeat offender escalation (ban for 1 week after 3 bans)
+[recidive]
+enabled = true
+filter = recidive
+logpath = /var/log/fail2ban.log
+bantime = 604800
+findtime = 86400
+maxretry = 3
+F2B
+
+# Custom Traefik filter
+mkdir -p /etc/fail2ban/filter.d
+cat > /etc/fail2ban/filter.d/traefik-auth.conf <<'F2BFILTER'
+[Definition]
+failregex = ^.*"clientAddr":"<HOST>:.*"OriginStatus":(?:401|403).*$
+ignoreregex =
+F2BFILTER
+
+echo "[harden] fail2ban configured"
+
+# =============================================================================
+# 5. APPARMOR — Docker + CloverApp profiles
+# =============================================================================
+echo "[harden] Setting up AppArmor profiles..."
+
+mkdir -p /etc/apparmor.d/cloverstack
+
+# Base CloverApp profile template (used by clovermarket install)
+cat > /etc/apparmor.d/cloverstack/cloverapp-default <<'APPARMOR'
+#include <tunables/global>
+
+profile cloverapp-default flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Allow network access
+  network,
+
+  # Allow reading common system files
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/nsswitch.conf r,
+  /etc/ssl/certs/** r,
+  /usr/share/ca-certificates/** r,
+
+  # Allow app data directory
+  /opt/cloverstack/marketplace/apps/*/** rw,
+
+  # Allow config directory
+  /etc/myclover/apps/*/** rw,
+
+  # Allow temp
+  /tmp/** rw,
+  /var/tmp/** rw,
+
+  # Deny sensitive host paths
+  deny /etc/shadow r,
+  deny /etc/gshadow r,
+  deny /etc/ssh/** rw,
+  deny /root/** rw,
+  deny /boot/** rw,
+  deny /proc/sys/** w,
+  deny /sys/** w,
+
+  # Allow Docker socket (for Docker-in-Docker if explicitly allowed)
+  # deny /var/run/docker.sock rw,  # uncommented = no DinD
+}
+APPARMOR
+
+echo "[harden] AppArmor profiles installed"
+
+# =============================================================================
+# 6. DOCKER DAEMON HARDENING
+# =============================================================================
+echo "[harden] Hardening Docker daemon..."
+
+mkdir -p /etc/docker
+
+cat > /etc/docker/daemon.json <<'DOCKER'
+{
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "50m",
+        "max-file": "3"
+    },
+    "storage-driver": "overlay2",
+    "live-restore": true,
+    "userland-proxy": false,
+    "no-new-privileges": true,
+    "icc": false,
+    "default-ulimits": {
+        "nofile": {
+            "Name": "nofile",
+            "Hard": 65536,
+            "Soft": 32768
+        },
+        "nproc": {
+            "Name": "nproc",
+            "Hard": 4096,
+            "Soft": 2048
+        }
+    },
+    "seccomp-profile": "/etc/docker/seccomp-default.json",
+    "default-address-pools": [
+        {
+            "base": "172.20.0.0/14",
+            "size": 24
+        }
+    ]
+}
+DOCKER
+
+# Note: default seccomp profile is built into Docker. The path above is a
+# placeholder — Docker uses its built-in default if the file doesn't exist.
+# For custom profiles, create /etc/docker/seccomp-default.json.
+
+echo "[harden] Docker daemon hardened"
+
+# =============================================================================
+# 7. FILE PERMISSIONS & CLEANUP
+# =============================================================================
+echo "[harden] Tightening file permissions..."
+
+# Restrict cron access
+chmod 600 /etc/crontab 2>/dev/null || true
+chmod 700 /etc/cron.d 2>/dev/null || true
+chmod 700 /etc/cron.daily 2>/dev/null || true
+chmod 700 /etc/cron.hourly 2>/dev/null || true
+chmod 700 /etc/cron.weekly 2>/dev/null || true
+chmod 700 /etc/cron.monthly 2>/dev/null || true
+
+# Restrict SSH directory
+chmod 700 /etc/ssh 2>/dev/null || true
+chmod 600 /etc/ssh/sshd_config 2>/dev/null || true
+
+# Restrict su to wheel/sudo group
+cat > /etc/pam.d/su <<'PAM_SU'
+auth       sufficient pam_rootok.so
+auth       required   pam_wheel.so use_uid
+@include common-auth
+@include common-account
+@include common-session
+PAM_SU
+
+echo "[harden] File permissions tightened"
+
+# =============================================================================
+# 8. AUTOMATIC SECURITY UPDATES
+# =============================================================================
+echo "[harden] Configuring automatic security updates..."
+
+# Install unattended-upgrades if not already present
+apt-get install -y unattended-upgrades apt-listchanges 2>/dev/null || true
+
+cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'UUCONF'
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}:${distro_codename}";
+};
+
+// Auto-remove unused dependencies
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+
+// Don't auto-reboot (CloverStack services need graceful shutdown)
+Unattended-Upgrade::Automatic-Reboot "false";
+
+// Email notifications (if postfix/mail configured)
+// Unattended-Upgrade::Mail "admin@localhost";
+
+// Log to syslog
+Unattended-Upgrade::SyslogEnable "true";
+UUCONF
+
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AUTOCONF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+AUTOCONF
+
+echo "[harden] Automatic security updates configured"
+
+# =============================================================================
+# 9. AUDIT LOGGING (auditd)
+# =============================================================================
+echo "[harden] Installing audit daemon..."
+
+apt-get install -y auditd audispd-plugins 2>/dev/null || true
+
+cat > /etc/audit/rules.d/myclover.rules <<'AUDIT'
+# mycloverOS Audit Rules — CIS Benchmark Aligned
+
+# Delete all existing rules
+-D
+
+# Set buffer size
+-b 8192
+
+# Failure mode: 1=printk, 2=panic
+-f 1
+
+# Monitor changes to user/group files
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/sudoers -p wa -k sudoers
+-w /etc/sudoers.d/ -p wa -k sudoers
+
+# Monitor SSH config changes
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
+
+# Monitor Docker config
+-w /etc/docker/daemon.json -p wa -k docker_config
+-w /var/run/docker.sock -p wa -k docker_socket
+
+# Monitor CloverStack config
+-w /etc/myclover/ -p wa -k cloverstack_config
+-w /opt/cloverstack/config/ -p wa -k cloverstack_config
+
+# Monitor firewall changes
+-w /etc/ufw/ -p wa -k firewall
+-w /etc/nftables.conf -p wa -k firewall
+
+# Monitor login events
+-w /var/log/auth.log -p wa -k auth_log
+-w /var/log/faillog -p wa -k logins
+-w /var/log/lastlog -p wa -k logins
+
+# Monitor privilege escalation
+-a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k privilege_escalation
+-a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k privilege_escalation
+
+# Monitor kernel module loading
+-w /sbin/insmod -p x -k kernel_modules
+-w /sbin/rmmod -p x -k kernel_modules
+-w /sbin/modprobe -p x -k kernel_modules
+
+# Monitor mount operations
+-a always,exit -F arch=b64 -S mount -S umount2 -k mounts
+
+# Make rules immutable (require reboot to change)
+-e 2
+AUDIT
+
+systemctl enable auditd 2>/dev/null || true
+
+echo "[harden] Audit logging configured"
+
+# =============================================================================
+# 10. SECURITY SCANNER (Lynis)
+# =============================================================================
+echo "[harden] Installing Lynis security scanner..."
+
+# Lynis is in Debian repos
+apt-get install -y lynis 2>/dev/null || true
+
+# Create convenience alias for security audits
+cat >> /etc/profile.d/myclover-security.sh <<'PROFILE'
+# mycloverOS security convenience aliases
+alias security-audit='sudo lynis audit system --quick'
+alias security-full='sudo lynis audit system'
+alias firewall-status='sudo ufw status verbose'
+alias failed-logins='sudo journalctl _SYSTEMD_UNIT=sshd.service | grep -i "failed\|invalid"'
+alias docker-security='docker info --format "{{json .SecurityOptions}}" | python3 -m json.tool'
+alias audit-today='sudo ausearch -ts today -m execve,USER_AUTH,USER_LOGIN --interpret'
+PROFILE
+
+echo "[harden] Lynis installed"
+
+# =============================================================================
+# 11. MOTD / LOGIN BANNER WITH SECURITY STATUS
+# =============================================================================
+echo "[harden] Setting up security status MOTD..."
+
+cat > /etc/update-motd.d/10-myclover-security <<'MOTD'
+#!/bin/bash
+# mycloverOS security status on login
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+echo ""
+echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║           mycloverOS Security Status                ║${NC}"
+echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
+
+# Firewall status
+if ufw status 2>/dev/null | grep -q "Status: active"; then
+    echo -e "${CYAN}║${NC}  Firewall:  ${GREEN}● Active${NC}"
+else
+    echo -e "${CYAN}║${NC}  Firewall:  ${RED}○ Inactive${NC}"
+fi
+
+# fail2ban status
+if systemctl is-active --quiet fail2ban 2>/dev/null; then
+    BANS=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
+    echo -e "${CYAN}║${NC}  Fail2Ban:  ${GREEN}● Active${NC} (${BANS:-0} banned IPs)"
+else
+    echo -e "${CYAN}║${NC}  Fail2Ban:  ${RED}○ Inactive${NC}"
+fi
+
+# AppArmor status
+if command -v aa-status &>/dev/null; then
+    PROFILES=$(aa-status 2>/dev/null | grep "profiles are loaded" | awk '{print $1}')
+    echo -e "${CYAN}║${NC}  AppArmor:  ${GREEN}● ${PROFILES:-0} profiles loaded${NC}"
+else
+    echo -e "${CYAN}║${NC}  AppArmor:  ${YELLOW}○ Not available${NC}"
+fi
+
+# Auditd
+if systemctl is-active --quiet auditd 2>/dev/null; then
+    echo -e "${CYAN}║${NC}  Audit:     ${GREEN}● Logging${NC}"
+else
+    echo -e "${CYAN}║${NC}  Audit:     ${RED}○ Not running${NC}"
+fi
+
+# Docker
+if systemctl is-active --quiet docker 2>/dev/null; then
+    CONTAINERS=$(docker ps -q 2>/dev/null | wc -l)
+    echo -e "${CYAN}║${NC}  Docker:    ${GREEN}● Running${NC} (${CONTAINERS} containers)"
+else
+    echo -e "${CYAN}║${NC}  Docker:    ${YELLOW}○ Stopped${NC}"
+fi
+
+# Updates
+UPDATES=$(apt list --upgradable 2>/dev/null | grep -c "upgradable" || echo 0)
+if [[ "$UPDATES" -gt 0 ]]; then
+    echo -e "${CYAN}║${NC}  Updates:   ${YELLOW}● ${UPDATES} available${NC}"
+else
+    echo -e "${CYAN}║${NC}  Updates:   ${GREEN}● System up to date${NC}"
+fi
+
+echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+echo -e "  Run ${CYAN}security-audit${NC} for a full Lynis scan"
+echo ""
+MOTD
+chmod +x /etc/update-motd.d/10-myclover-security
+
+echo "[harden] MOTD configured"
+
+# =============================================================================
+# DONE
+# =============================================================================
+echo "[mycloverOS] Security hardening complete"
+echo "[mycloverOS] Hardening layers: sysctl, SSH, UFW, fail2ban, AppArmor,"
+echo "[mycloverOS]   Docker, auditd, auto-updates, Lynis, file permissions"
