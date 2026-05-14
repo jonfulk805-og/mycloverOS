@@ -10,9 +10,7 @@ dbus
 udev
 init
 
-# --- Bootloader (needed for ISO creation) ---
-isolinux
-syslinux-common
+# --- Bootloader (GRUB for UEFI + BIOS boot) ---
 grub-efi-amd64-bin
 grub-pc-bin
 grub-common
