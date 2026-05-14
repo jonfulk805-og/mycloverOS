@@ -34,10 +34,16 @@ REQUIRED_CMDS="lb debootstrap xorriso mksquashfs"
 for cmd in ${REQUIRED_CMDS}; do
     if ! command -v "${cmd}" &>/dev/null; then
         err "Missing: ${cmd}"
-        err "Install: apt install live-build debootstrap xorriso squashfs-tools grub-pc-bin grub-efi-amd64-bin"
+        err "Install: apt install live-build debootstrap xorriso squashfs-tools grub-pc-bin grub-efi-amd64-bin mtools dosfstools debian-archive-keyring"
         exit 1
     fi
 done
+
+# Warn if Debian keyring is missing (needed when building on Ubuntu)
+if [[ ! -f /usr/share/keyrings/debian-archive-keyring.gpg ]]; then
+    warn "Debian archive keyring not found -- debootstrap will skip signature verification"
+    warn "Fix: sudo apt install debian-archive-keyring"
+fi
 
 log "Building mycloverOS ${DISTRO_VERSION} (${DISTRO_CODENAME}) -- Edition: ${EDITION}"
 
