@@ -80,9 +80,9 @@ python3-pip
 python3-venv
 
 # --- Container runtime ---
-docker.io
-docker-compose
-containerd
+# Docker CE + Compose v2 plugin installed via build hook (0150-docker.hook.chroot)
+# from Docker's official apt repo. Do NOT use Debian's docker.io (ships without
+# the 'docker compose' v2 subcommand that CloverStack scripts require).
 
 # --- System monitoring ---
 lm-sensors
