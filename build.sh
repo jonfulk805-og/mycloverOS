@@ -75,7 +75,14 @@ LB_ARGS=(
     --architectures "${BASE_ARCH}"
     --mirror-bootstrap "${BASE_MIRROR}"
     --mirror-chroot "${BASE_MIRROR}"
-    --security false
+    --mirror-chroot-security "${BASE_SECURITY_MIRROR}"
+    --mirror-binary "${BASE_MIRROR}"
+    --mirror-binary-security "${BASE_SECURITY_MIRROR}"
+    --parent-mirror-chroot-security "${BASE_SECURITY_MIRROR}"
+    --parent-mirror-binary "http://deb.debian.org/debian"
+    --parent-mirror-binary-security "${BASE_SECURITY_MIRROR}"
+    --security true
+    --updates false
     --binary-images iso-hybrid
     --iso-application "${DISTRO_NAME}"
     --iso-volume "${ISO_LABEL}"
