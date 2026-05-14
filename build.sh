@@ -79,6 +79,7 @@ LB_ARGS=(
     --memtest none
     --apt-recommends false
     --cache true
+    --keyring-packages debian-archive-keyring
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
