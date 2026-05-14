@@ -1,0 +1,22 @@
+[Unit]
+Description=mycloverOS First-Boot Setup Wizard
+Documentation=https://github.com/jonfulk805-og/mycloverOS
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/etc/myclover/.setup-complete
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/myclover/setup-wizard/myclover-setup-wizard.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal+console
+
+# Security hardening
+ProtectSystem=strict
+ReadWritePaths=/etc /opt/cloverstack /var/lib/cloverstack /home
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
