@@ -80,6 +80,9 @@ LB_ARGS=(
     --apt-recommends false
     --cache true
     --keyring-packages debian-archive-keyring
+    --linux-packages "linux-image"
+    --linux-flavours "amd64"
+    --apt-indices false
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
