@@ -88,6 +88,7 @@ LB_ARGS=(
     --apt-indices false
     --initramfs live-boot
     --initsystem systemd
+    --bootloaders grub-efi
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
