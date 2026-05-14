@@ -82,6 +82,7 @@ LB_ARGS=(
     --keyring-packages debian-archive-keyring
     --linux-packages "none"
     --apt-indices false
+    --initramfs live-boot
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
