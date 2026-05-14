@@ -1,0 +1,54 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Configure console for first-boot wizard
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Configuring console display..."
+
+# Create a script that shows the wizard URL on all TTYs
+cat > /usr/local/bin/myclover-show-wizard-banner << 'BANNER_SCRIPT'
+#!/bin/bash
+# Show setup wizard URL on console if setup is not complete
+if [ ! -f /etc/myclover/.setup-complete ]; then
+    IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [ -z "$IP" ]; then
+        IP="<waiting for network>"
+    fi
+    clear
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║                                                      ║"
+    echo "  ║       🍀  Welcome to mycloverOS v0.1.0               ║"
+    echo "  ║                                                      ║"
+    echo "  ║   Complete setup from your browser:                  ║"
+    echo "  ║                                                      ║"
+    printf "  ║   →  http://%-40s ║\n" "${IP}:8080"
+    echo "  ║                                                      ║"
+    echo "  ║   Or login below for console access.                 ║"
+    echo "  ║                                                      ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo ""
+fi
+BANNER_SCRIPT
+chmod +x /usr/local/bin/myclover-show-wizard-banner
+
+# Create a getty override to show the banner before login prompt
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/myclover-banner.conf << 'GETTY_CONF'
+[Service]
+ExecStartPre=-/usr/local/bin/myclover-show-wizard-banner
+GETTY_CONF
+
+# Also create issue file for all TTYs
+cat > /etc/issue << 'ISSUE'
+
+  🍀 mycloverOS v0.1.0 (seedling)
+  Setup wizard: http://\4:8080
+
+ISSUE
+
+# Autologin on tty1 is NOT set — users should use the web wizard
+# But we make sure getty starts cleanly
+
+echo "[mycloverOS] Console display configured"
