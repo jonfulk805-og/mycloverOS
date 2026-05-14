@@ -25,8 +25,8 @@ wpasupplicant
 rfkill
 
 # --- Firewall ---
-nftables
-iptables-persistent
+# nftables already in base.list
+# iptables-persistent removed: conflicts with ufw (ufw handles persistence)
 
 # --- Traffic analysis ---
 iftop
