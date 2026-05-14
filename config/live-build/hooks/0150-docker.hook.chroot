@@ -1,0 +1,40 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Install Docker CE + Compose v2 from official repo
+# Debian's docker.io package does not include the 'docker compose' v2
+# subcommand that CloverStack scripts require.
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Installing Docker CE from official repository..."
+
+# Prerequisites (should already be in base.list but ensure they're present)
+apt-get update
+apt-get install -y ca-certificates curl gnupg
+
+# Add Docker's official GPG key
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add Docker apt repo (Debian Bookworm)
+cat > /etc/apt/sources.list.d/docker.list <<EOF
+deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable
+EOF
+
+apt-get update
+apt-get install -y \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin
+
+# Verify docker compose v2 is available
+docker compose version || echo "[mycloverOS] WARNING: docker compose v2 not available"
+
+# Enable Docker service
+systemctl enable docker 2>/dev/null || true
+systemctl enable containerd 2>/dev/null || true
+
+echo "[mycloverOS] Docker CE installed successfully"
