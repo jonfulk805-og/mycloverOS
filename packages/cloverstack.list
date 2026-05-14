@@ -35,7 +35,7 @@ certbot
 # --- Monitoring dependencies ---
 snmp
 snmpd
-snmp-mibs-downloader
+# snmp-mibs-downloader  # Requires non-free repo; enable if non-free is added
 
 # --- Log pipeline dependencies ---
 apt-transport-https
