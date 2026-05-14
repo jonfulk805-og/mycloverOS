@@ -2,10 +2,13 @@
 
 ## Prerequisites
 
-- Debian or Ubuntu host (Bookworm or later recommended)
+- **Ubuntu 24.04 LTS** (Noble) or **Debian 12** (Bookworm) — tested and supported
 - Root access (live-build requires it)
 - ~10 GB free disk space
 - Internet connection (to download packages)
+
+> **Note:** The build host can be Ubuntu 24.04 LTS. The target ISO is always Debian Bookworm-based.
+> The build script auto-detects your live-build version and adjusts flags accordingly.
 
 ## Install Build Dependencies
 
