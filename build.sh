@@ -67,6 +67,11 @@ log "live-build version: ${LB_VERSION_RAW}"
 
 LB_ARGS=(
     --distribution "${BASE_CODENAME}"
+    --mode debian
+    --parent-distribution "bookworm"
+    --parent-mirror-bootstrap "http://deb.debian.org/debian"
+    --parent-mirror-chroot "http://deb.debian.org/debian"
+    --parent-mirror-chroot-security "http://security.debian.org/debian-security"
     --archive-areas "main"
     --architectures "${BASE_ARCH}"
     --mirror-bootstrap "${BASE_MIRROR}"
