@@ -1,0 +1,26 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Suppress UFW console log spam
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Configuring UFW and console logging..."
+
+# Reduce kernel console log level (3 = errors only, no info/warn spam)
+echo 'kernel.printk = 3 4 1 3' > /etc/sysctl.d/99-myclover-quiet-console.conf
+
+# Configure UFW to not log IGMP/multicast packets that flood the console
+# This runs after UFW is installed
+if [ -d /etc/ufw ]; then
+    # Add rule before the COMMIT in before.rules to silently drop IGMP multicast
+    if [ -f /etc/ufw/before.rules ]; then
+        sed -i '/^COMMIT/i # mycloverOS: silently drop IGMP multicast (prevents console log spam)\n-A ufw-before-input -d 224.0.0.0/4 -j DROP' /etc/ufw/before.rules
+    fi
+    
+    # Set UFW logging to low (less verbose)
+    if [ -f /etc/ufw/ufw.conf ]; then
+        sed -i 's/^LOGLEVEL=.*/LOGLEVEL=low/' /etc/ufw/ufw.conf
+    fi
+fi
+
+echo "[mycloverOS] Console logging configured"
