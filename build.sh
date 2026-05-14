@@ -83,6 +83,7 @@ LB_ARGS=(
     --linux-packages "none"
     --apt-indices false
     --initramfs live-boot
+    --initsystem systemd
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
