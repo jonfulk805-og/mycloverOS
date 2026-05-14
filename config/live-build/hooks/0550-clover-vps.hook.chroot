@@ -1,0 +1,19 @@
+#!/bin/sh
+# CloverVPS Manager — install and enable white-label VPS management
+set -e
+
+echo "[CloverVPS] Setting up CloverVPS manager..."
+
+# Create directories
+mkdir -p /etc/myclover/clover-vps
+mkdir -p /opt/myclover/clover-vps
+
+# Ensure service is enabled (starts after first-boot setup completes)
+systemctl enable clover-vps.service 2>/dev/null || true
+
+# Open firewall port 8081 for the VPS management panel
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow 8081/tcp comment "CloverVPS Manager" || true
+fi
+
+echo "[CloverVPS] CloverVPS manager installed successfully."
