@@ -65,7 +65,6 @@ log "Deploying Traefik reverse proxy..."
 mkdir -p /opt/cloverstack/traefik/{config,certs}
 
 cat > /opt/cloverstack/traefik/docker-compose.yml <<'EOF'
-version: "3.8"
 services:
   traefik:
     image: traefik:v3.0
