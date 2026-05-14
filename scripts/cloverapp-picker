@@ -1,0 +1,775 @@
+#!/usr/bin/env python3
+"""
+CloverApp Picker — Interactive TUI for first-boot app selection.
+Runs during myclover-install or first-boot provisioning.
+
+Usage:
+    cloverapp-picker                 # Interactive TUI mode
+    cloverapp-picker --preset msp    # Auto-select a preset
+    cloverapp-picker --headless      # Non-interactive (install defaults only)
+"""
+
+import curses
+import json
+import os
+import subprocess
+import sys
+import textwrap
+
+# =============================================================================
+# App Catalog (built-in defaults + marketplace sync)
+# =============================================================================
+
+BUILTIN_APPS = [
+    # --- CloverStack Core Modules (always available) ---
+    {
+        "name": "netmon",
+        "displayName": "NetMon",
+        "description": "Network monitoring & alerting (Zabbix)",
+        "category": "monitoring",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "5 devices, basic dashboards",
+        "pro_features": "Unlimited devices, alerting, maps",
+        "resources": {"cpu": 1, "memory": "512M", "disk": "2G"},
+        "builtin": True,
+    },
+    {
+        "name": "sentrylog",
+        "displayName": "SentryLog",
+        "description": "Log management & SIEM (Graylog + Wazuh)",
+        "category": "security",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "7-day retention, basic search",
+        "pro_features": "90-day retention, alerts, compliance",
+        "resources": {"cpu": 2, "memory": "2G", "disk": "10G"},
+        "builtin": True,
+    },
+    {
+        "name": "myclover-vault",
+        "displayName": "MyCloverVault",
+        "description": "Password manager & 2FA (Vaultwarden)",
+        "category": "security",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "Personal vault, browser extension",
+        "pro_features": "Team vaults, SSO, audit log",
+        "resources": {"cpu": 0.5, "memory": "128M", "disk": "500M"},
+        "builtin": True,
+    },
+    {
+        "name": "chappie",
+        "displayName": "Chappie AI",
+        "description": "Private AI assistant (Ollama)",
+        "category": "ai-ml",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "1 model, basic chat",
+        "pro_features": "Multiple models, RAG, API access",
+        "resources": {"cpu": 2, "memory": "4G", "disk": "20G"},
+        "builtin": True,
+    },
+    {
+        "name": "clovermedia",
+        "displayName": "CloverMedia",
+        "description": "Smart TV, streaming hub & DJ mode",
+        "category": "media",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "YouTube, local media, internet radio",
+        "pro_features": "4 screens, DJ mode, multi-room audio",
+        "resources": {"cpu": 1, "memory": "512M", "disk": "5G"},
+        "builtin": True,
+    },
+    {
+        "name": "cloversign",
+        "displayName": "CloverSign",
+        "description": "Digital signage & screencast receiver",
+        "category": "business",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "1 screen, basic playlists",
+        "pro_features": "25 screens, scheduling, zones",
+        "resources": {"cpu": 0.5, "memory": "256M", "disk": "2G"},
+        "builtin": True,
+    },
+    {
+        "name": "cloverguard",
+        "displayName": "CloverGuard",
+        "description": "Web proxy & content filter",
+        "category": "security",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "Basic filtering, 10 users",
+        "pro_features": "50 users, HTTPS inspection, reports",
+        "resources": {"cpu": 1, "memory": "512M", "disk": "2G"},
+        "builtin": True,
+    },
+    {
+        "name": "clovermine",
+        "displayName": "CloverMine",
+        "description": "Background crypto mining (XMRig)",
+        "category": "finance",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "CPU mining, basic dashboard",
+        "pro_features": "GPU mining, fleet dashboard, scheduler",
+        "resources": {"cpu": 1, "memory": "256M", "disk": "500M"},
+        "builtin": True,
+    },
+    {
+        "name": "cloverpos",
+        "displayName": "CloverPOS",
+        "description": "Point of sale & inventory management",
+        "category": "business",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "1 register, basic inventory",
+        "pro_features": "Unlimited registers, AI forecasting",
+        "resources": {"cpu": 1, "memory": "1G", "disk": "5G"},
+        "builtin": True,
+    },
+    {
+        "name": "cloverdesign",
+        "displayName": "CloverDesign",
+        "description": "AI design & engineering studio",
+        "category": "productivity",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "Basic templates, simple renders",
+        "pro_features": "AI agents, 3D renders, BOM export",
+        "resources": {"cpu": 2, "memory": "2G", "disk": "10G"},
+        "builtin": True,
+    },
+    {
+        "name": "cloverbot",
+        "displayName": "CloverBot",
+        "description": "AI support chatbot with RAG",
+        "category": "ai-ml",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "Basic chat widget, 100 docs",
+        "pro_features": "Lead capture, Slack, 10K docs",
+        "resources": {"cpu": 1, "memory": "512M", "disk": "2G"},
+        "builtin": True,
+    },
+    {
+        "name": "cloverdrone",
+        "displayName": "CloverDrone",
+        "description": "UAV control, FPV video & autonomous missions",
+        "category": "iot",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "1 drone, basic telemetry",
+        "pro_features": "Fleet, autonomous missions, AI",
+        "resources": {"cpu": 1, "memory": "512M", "disk": "2G"},
+        "builtin": True,
+    },
+    {
+        "name": "clovermesh",
+        "displayName": "CloverMesh",
+        "description": "Distributed multi-node architecture",
+        "category": "networking",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "2-node mesh",
+        "pro_features": "Unlimited nodes, auto-failover",
+        "resources": {"cpu": 0.5, "memory": "256M", "disk": "500M"},
+        "builtin": True,
+    },
+    {
+        "name": "clovermesh-radio",
+        "displayName": "CloverMesh Radio",
+        "description": "LoRa mesh networking (Meshtastic)",
+        "category": "networking",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "2 nodes, basic messaging",
+        "pro_features": "10 nodes, GPS tracking, sensors",
+        "resources": {"cpu": 0.25, "memory": "128M", "disk": "200M"},
+        "builtin": True,
+    },
+    {
+        "name": "streamserver",
+        "displayName": "StreamServer",
+        "description": "Self-hosted live streaming platform",
+        "category": "media",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "1 stream, basic ingest",
+        "pro_features": "Multi-stream, VOD, transcoding",
+        "resources": {"cpu": 2, "memory": "1G", "disk": "10G"},
+        "builtin": True,
+    },
+    {
+        "name": "cloverbase",
+        "displayName": "CloverBase",
+        "description": "Low-code database platform (FileMaker killer)",
+        "category": "productivity",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "5 apps, 50K records",
+        "pro_features": "25 apps, AI co-pilot, 500K records",
+        "resources": {"cpu": 1, "memory": "512M", "disk": "5G"},
+        "builtin": True,
+    },
+    {
+        "name": "clovervr",
+        "displayName": "CloverVR",
+        "description": "VR streaming server & social VR hub",
+        "category": "gaming",
+        "tiers": ["free", "pro", "enterprise"],
+        "free_features": "1 headset, basic streaming",
+        "pro_features": "5 headsets, social VR, AI NPCs",
+        "resources": {"cpu": 4, "memory": "8G", "disk": "30G"},
+        "builtin": True,
+    },
+]
+
+# Presets define which apps are auto-selected for common use cases
+PRESETS = {
+    "minimal": {
+        "name": "Minimal",
+        "description": "Essential services only",
+        "apps": ["myclover-vault", "chappie"],
+    },
+    "home": {
+        "name": "Home Server",
+        "description": "Media, security, and smart home",
+        "apps": [
+            "myclover-vault", "chappie", "clovermedia", "cloverguard",
+            "streamserver",
+        ],
+    },
+    "msp": {
+        "name": "MSP Stack",
+        "description": "Full IT/MSP monitoring & management",
+        "apps": [
+            "netmon", "sentrylog", "myclover-vault", "chappie",
+            "cloverguard", "clovermesh", "cloverbot",
+        ],
+    },
+    "creator": {
+        "name": "Creator Studio",
+        "description": "Content creation, streaming & design",
+        "apps": [
+            "chappie", "clovermedia", "streamserver", "cloverdesign",
+            "cloverbot", "cloverbase",
+        ],
+    },
+    "business": {
+        "name": "Business Suite",
+        "description": "POS, signage, database & communications",
+        "apps": [
+            "myclover-vault", "chappie", "cloverpos", "cloversign",
+            "cloverbot", "cloverbase", "cloverguard",
+        ],
+    },
+    "full": {
+        "name": "Full Stack",
+        "description": "Everything. The whole CloverStack.",
+        "apps": [a["name"] for a in BUILTIN_APPS],
+    },
+}
+
+# =============================================================================
+# TUI Components
+# =============================================================================
+
+class AppPicker:
+    def __init__(self, stdscr):
+        self.stdscr = stdscr
+        self.apps = BUILTIN_APPS[:]
+        self.marketplace_apps = []
+        self.selected = set()
+        self.cursor = 0
+        self.scroll_offset = 0
+        self.mode = "presets"  # presets | apps | confirm
+        self.preset_cursor = 0
+        self.detail_app = None
+
+        # Load marketplace apps if catalog exists
+        self._load_marketplace()
+
+        # Screen dimensions
+        self.height, self.width = stdscr.getmaxyx()
+
+        # Color pairs
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)
+        curses.init_pair(2, curses.COLOR_YELLOW, -1)
+        curses.init_pair(3, curses.COLOR_CYAN, -1)
+        curses.init_pair(4, curses.COLOR_RED, -1)
+        curses.init_pair(5, curses.COLOR_WHITE, curses.COLOR_GREEN)
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_CYAN)
+
+    def _load_marketplace(self):
+        """Load additional apps from marketplace catalog if available."""
+        catalog_path = "/opt/cloverstack/marketplace/registry/catalog.json"
+        if os.path.exists(catalog_path):
+            try:
+                with open(catalog_path) as f:
+                    catalog = json.load(f)
+                for app in catalog.get("apps", []):
+                    if app["name"] not in [a["name"] for a in self.apps]:
+                        app["builtin"] = False
+                        self.marketplace_apps.append(app)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    def _total_resources(self):
+        """Calculate total resources for selected apps."""
+        cpu = 0
+        mem_mb = 0
+        disk_mb = 0
+        for app in self.apps + self.marketplace_apps:
+            if app["name"] in self.selected:
+                res = app.get("resources", {})
+                cpu += res.get("cpu", 0.5)
+                mem_str = str(res.get("memory", "256M"))
+                if mem_str.endswith("G"):
+                    mem_mb += float(mem_str[:-1]) * 1024
+                else:
+                    mem_mb += float(mem_str.rstrip("M"))
+                disk_str = str(res.get("disk", "1G"))
+                if disk_str.endswith("G"):
+                    disk_mb += float(disk_str[:-1]) * 1024
+                else:
+                    disk_mb += float(disk_str.rstrip("M"))
+        return cpu, mem_mb, disk_mb
+
+    def draw_header(self):
+        """Draw the header bar."""
+        header = " CloverApp Picker -- mycloverOS First Boot Setup "
+        self.stdscr.attron(curses.color_pair(6) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, header.center(self.width)[:self.width - 1])
+        self.stdscr.attroff(curses.color_pair(6) | curses.A_BOLD)
+
+    def draw_footer(self):
+        """Draw the status/help bar."""
+        y = self.height - 1
+        cpu, mem_mb, disk_mb = self._total_resources()
+
+        if self.mode == "presets":
+            help_text = " [Enter] Select preset  [Tab] Manual pick  [q] Quit"
+        elif self.mode == "apps":
+            help_text = " [Space] Toggle  [Enter] Confirm  [i] Info  [p] Presets  [q] Cancel"
+        else:
+            help_text = " [Enter] Install  [Esc] Go back  [q] Quit"
+
+        # Resource summary
+        mem_str = f"{mem_mb / 1024:.1f}G" if mem_mb >= 1024 else f"{int(mem_mb)}M"
+        disk_str = f"{disk_mb / 1024:.1f}G" if disk_mb >= 1024 else f"{int(disk_mb)}M"
+        res_text = f"Selected: {len(self.selected)} apps | CPU: {cpu:.1f} | RAM: {mem_str} | Disk: {disk_str}"
+
+        self.stdscr.attron(curses.color_pair(6))
+        self.stdscr.addstr(y, 0, " " * (self.width - 1))
+        self.stdscr.addstr(y, 0, help_text[:self.width // 2])
+        self.stdscr.addstr(y, max(0, self.width - len(res_text) - 2), res_text[:self.width // 2])
+        self.stdscr.attroff(curses.color_pair(6))
+
+    def draw_presets(self):
+        """Draw preset selection screen."""
+        self.draw_header()
+
+        y = 2
+        self.stdscr.addstr(y, 2, "Choose a preset to get started quickly, or pick apps manually.",
+                           curses.color_pair(3))
+        y += 2
+
+        preset_list = list(PRESETS.items())
+        for i, (key, preset) in enumerate(preset_list):
+            if i == self.preset_cursor:
+                attr = curses.A_REVERSE | curses.A_BOLD
+            else:
+                attr = curses.A_NORMAL
+
+            # Preset name and description
+            prefix = " > " if i == self.preset_cursor else "   "
+            name_str = f"{prefix}{preset['name']}"
+            self.stdscr.addstr(y, 2, name_str[:self.width - 4], attr)
+            y += 1
+
+            desc_str = f"     {preset['description']} ({len(preset['apps'])} apps)"
+            self.stdscr.addstr(y, 2, desc_str[:self.width - 4],
+                               curses.color_pair(2) if i == self.preset_cursor else curses.A_DIM)
+            y += 1
+
+            # Show apps in preset
+            if i == self.preset_cursor:
+                app_names = []
+                for app_slug in preset["apps"]:
+                    for app in self.apps:
+                        if app["name"] == app_slug:
+                            app_names.append(app["displayName"])
+                            break
+                apps_str = "     Apps: " + ", ".join(app_names)
+                # Wrap if too long
+                for line in textwrap.wrap(apps_str, self.width - 8):
+                    self.stdscr.addstr(y, 2, line[:self.width - 4], curses.color_pair(1))
+                    y += 1
+
+            y += 1
+
+        self.draw_footer()
+
+    def draw_apps(self):
+        """Draw app selection list."""
+        self.draw_header()
+
+        y = 2
+        self.stdscr.addstr(y, 2, "Select apps to install (Space to toggle):", curses.color_pair(3))
+        y += 1
+
+        # Group by category
+        all_apps = self.apps + self.marketplace_apps
+        categories = {}
+        for app in all_apps:
+            cat = app.get("category", "other")
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(app)
+
+        # Flatten for navigation
+        flat_items = []
+        for cat in sorted(categories.keys()):
+            flat_items.append({"type": "header", "category": cat})
+            for app in categories[cat]:
+                flat_items.append({"type": "app", "app": app})
+
+        visible_height = self.height - 5  # header + footer + margins
+
+        # Adjust scroll
+        if self.cursor < self.scroll_offset:
+            self.scroll_offset = self.cursor
+        if self.cursor >= self.scroll_offset + visible_height:
+            self.scroll_offset = self.cursor - visible_height + 1
+
+        for idx in range(self.scroll_offset, min(len(flat_items), self.scroll_offset + visible_height)):
+            item = flat_items[idx]
+            row = y + (idx - self.scroll_offset)
+
+            if row >= self.height - 1:
+                break
+
+            if item["type"] == "header":
+                cat_name = item["category"].upper().replace("-", " ")
+                self.stdscr.addstr(row, 2, f"--- {cat_name} ---",
+                                   curses.color_pair(3) | curses.A_BOLD)
+            else:
+                app = item["app"]
+                is_selected = app["name"] in self.selected
+                is_cursor = idx == self.cursor
+
+                # Checkbox
+                checkbox = "[x]" if is_selected else "[ ]"
+                color = curses.color_pair(1) if is_selected else curses.A_NORMAL
+                if is_cursor:
+                    color = color | curses.A_REVERSE
+
+                # Source badge
+                badge = " [CS]" if app.get("builtin") else " [MK]"
+
+                line = f" {checkbox} {app['displayName']:<20}{badge}  {app['description']}"
+                self.stdscr.addstr(row, 1, line[:self.width - 2], color)
+
+        # Store flat_items for navigation
+        self._flat_items = flat_items
+
+        self.draw_footer()
+
+    def draw_detail(self):
+        """Draw detailed app info panel."""
+        if not self.detail_app:
+            return
+
+        app = self.detail_app
+        self.draw_header()
+
+        y = 2
+        self.stdscr.addstr(y, 2, f"{app['displayName']}", curses.A_BOLD)
+        y += 1
+        self.stdscr.addstr(y, 2, app["description"], curses.color_pair(3))
+        y += 2
+
+        self.stdscr.addstr(y, 2, "Tiers:", curses.A_BOLD)
+        y += 1
+        self.stdscr.addstr(y, 4, f"FREE: {app.get('free_features', 'Basic features')}",
+                           curses.color_pair(1))
+        y += 1
+        if "pro" in app.get("tiers", []):
+            self.stdscr.addstr(y, 4, f"PRO:  {app.get('pro_features', 'Full features')}",
+                               curses.color_pair(2))
+            y += 1
+        y += 1
+
+        res = app.get("resources", {})
+        self.stdscr.addstr(y, 2, "Resources:", curses.A_BOLD)
+        y += 1
+        self.stdscr.addstr(y, 4,
+                           f"CPU: {res.get('cpu', '?')} cores  |  "
+                           f"RAM: {res.get('memory', '?')}  |  "
+                           f"Disk: {res.get('disk', '?')}")
+        y += 2
+
+        is_selected = app["name"] in self.selected
+        status = "SELECTED" if is_selected else "NOT SELECTED"
+        color = curses.color_pair(1) if is_selected else curses.color_pair(4)
+        self.stdscr.addstr(y, 2, f"Status: {status}", color | curses.A_BOLD)
+        y += 2
+        self.stdscr.addstr(y, 2, "[Space] Toggle  [Esc/i] Back to list", curses.A_DIM)
+
+        self.draw_footer()
+
+    def draw_confirm(self):
+        """Draw confirmation screen before install."""
+        self.draw_header()
+
+        y = 2
+        self.stdscr.addstr(y, 2, "Ready to install the following apps:", curses.A_BOLD)
+        y += 2
+
+        all_apps = self.apps + self.marketplace_apps
+        for app in all_apps:
+            if app["name"] in self.selected:
+                badge = "[CS]" if app.get("builtin") else "[MK]"
+                self.stdscr.addstr(y, 4, f"[x] {app['displayName']}  {badge}",
+                                   curses.color_pair(1))
+                y += 1
+                if y >= self.height - 6:
+                    self.stdscr.addstr(y, 4, f"  ... and {len(self.selected) - y + 4} more",
+                                       curses.A_DIM)
+                    break
+
+        y += 1
+        cpu, mem_mb, disk_mb = self._total_resources()
+        mem_str = f"{mem_mb / 1024:.1f}G" if mem_mb >= 1024 else f"{int(mem_mb)}M"
+        disk_str = f"{disk_mb / 1024:.1f}G" if disk_mb >= 1024 else f"{int(disk_mb)}M"
+
+        self.stdscr.addstr(y, 2, "Total resources needed:", curses.A_BOLD)
+        y += 1
+        self.stdscr.addstr(y, 4, f"CPU: {cpu:.1f} cores  |  RAM: {mem_str}  |  Disk: {disk_str}",
+                           curses.color_pair(2))
+        y += 2
+
+        self.stdscr.addstr(y, 2, "All apps start on the FREE tier.", curses.color_pair(3))
+        y += 1
+        self.stdscr.addstr(y, 2, "Upgrade anytime: clovermarket tier <app> pro", curses.A_DIM)
+        y += 2
+
+        self.stdscr.addstr(y, 2, "[Enter] Install now    [Esc] Go back", curses.A_BOLD)
+
+        self.draw_footer()
+
+    def run(self):
+        """Main TUI event loop."""
+        curses.curs_set(0)
+        self.stdscr.clear()
+
+        while True:
+            self.height, self.width = self.stdscr.getmaxyx()
+            self.stdscr.clear()
+
+            if self.mode == "presets":
+                self.draw_presets()
+            elif self.mode == "apps":
+                if self.detail_app:
+                    self.draw_detail()
+                else:
+                    self.draw_apps()
+            elif self.mode == "confirm":
+                self.draw_confirm()
+
+            self.stdscr.refresh()
+
+            key = self.stdscr.getch()
+
+            if key == ord("q"):
+                return None  # User quit
+
+            if self.mode == "presets":
+                self._handle_presets_input(key)
+            elif self.mode == "apps":
+                if self.detail_app:
+                    self._handle_detail_input(key)
+                else:
+                    self._handle_apps_input(key)
+            elif self.mode == "confirm":
+                self._handle_confirm_input(key)
+
+    def _handle_presets_input(self, key):
+        preset_list = list(PRESETS.items())
+        if key == curses.KEY_UP or key == ord("k"):
+            self.preset_cursor = max(0, self.preset_cursor - 1)
+        elif key == curses.KEY_DOWN or key == ord("j"):
+            self.preset_cursor = min(len(preset_list) - 1, self.preset_cursor + 1)
+        elif key == ord("\n") or key == curses.KEY_ENTER or key == 10:
+            # Apply preset
+            preset_key = preset_list[self.preset_cursor][0]
+            preset = PRESETS[preset_key]
+            self.selected = set(preset["apps"])
+            self.mode = "confirm"
+        elif key == ord("\t"):
+            # Switch to manual app picker
+            self.mode = "apps"
+
+    def _handle_apps_input(self, key):
+        flat = getattr(self, "_flat_items", [])
+        if not flat:
+            return
+
+        if key == curses.KEY_UP or key == ord("k"):
+            self.cursor = max(0, self.cursor - 1)
+            # Skip headers
+            while self.cursor > 0 and flat[self.cursor]["type"] == "header":
+                self.cursor -= 1
+        elif key == curses.KEY_DOWN or key == ord("j"):
+            self.cursor = min(len(flat) - 1, self.cursor + 1)
+            while self.cursor < len(flat) - 1 and flat[self.cursor]["type"] == "header":
+                self.cursor += 1
+        elif key == ord(" "):
+            # Toggle selection
+            if flat[self.cursor]["type"] == "app":
+                app_name = flat[self.cursor]["app"]["name"]
+                if app_name in self.selected:
+                    self.selected.discard(app_name)
+                else:
+                    self.selected.add(app_name)
+        elif key == ord("i"):
+            # Show detail
+            if flat[self.cursor]["type"] == "app":
+                self.detail_app = flat[self.cursor]["app"]
+        elif key == ord("p"):
+            self.mode = "presets"
+        elif key == ord("\n") or key == curses.KEY_ENTER or key == 10:
+            if self.selected:
+                self.mode = "confirm"
+        elif key == ord("a"):
+            # Select all
+            for app in self.apps + self.marketplace_apps:
+                self.selected.add(app["name"])
+        elif key == ord("n"):
+            # Deselect all
+            self.selected.clear()
+
+    def _handle_detail_input(self, key):
+        if key == 27 or key == ord("i"):  # Esc or i
+            self.detail_app = None
+        elif key == ord(" "):
+            app_name = self.detail_app["name"]
+            if app_name in self.selected:
+                self.selected.discard(app_name)
+            else:
+                self.selected.add(app_name)
+
+    def _handle_confirm_input(self, key):
+        if key == ord("\n") or key == curses.KEY_ENTER or key == 10:
+            return self.selected  # Not actually returned from run() -- we'll fix
+        elif key == 27:  # Esc
+            self.mode = "apps"
+
+    def run(self):
+        """Main TUI event loop."""
+        curses.curs_set(0)
+        self.stdscr.clear()
+
+        while True:
+            self.height, self.width = self.stdscr.getmaxyx()
+            self.stdscr.clear()
+
+            if self.mode == "presets":
+                self.draw_presets()
+            elif self.mode == "apps":
+                if self.detail_app:
+                    self.draw_detail()
+                else:
+                    self.draw_apps()
+            elif self.mode == "confirm":
+                self.draw_confirm()
+
+            self.stdscr.refresh()
+
+            key = self.stdscr.getch()
+
+            if key == ord("q"):
+                return None
+
+            if self.mode == "presets":
+                self._handle_presets_input(key)
+            elif self.mode == "apps":
+                if self.detail_app:
+                    self._handle_detail_input(key)
+                else:
+                    self._handle_apps_input(key)
+            elif self.mode == "confirm":
+                if key == ord("\n") or key == curses.KEY_ENTER or key == 10:
+                    return list(self.selected)
+                elif key == 27:
+                    self.mode = "apps"
+
+
+# =============================================================================
+# Non-interactive / Headless Mode
+# =============================================================================
+
+def headless_install(preset_name="minimal"):
+    """Install a preset without TUI."""
+    if preset_name not in PRESETS:
+        print(f"[cloverapp-picker] Unknown preset: {preset_name}")
+        print(f"[cloverapp-picker] Available: {', '.join(PRESETS.keys())}")
+        sys.exit(1)
+
+    preset = PRESETS[preset_name]
+    apps = preset["apps"]
+    print(f"[cloverapp-picker] Using preset: {preset['name']} ({len(apps)} apps)")
+
+    for app_name in apps:
+        print(f"[cloverapp-picker] Installing: {app_name}")
+        subprocess.run(
+            ["clovermarket", "install", app_name, "free"],
+            check=False,
+        )
+
+    print(f"[cloverapp-picker] Done! {len(apps)} apps installed.")
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+def main():
+    args = sys.argv[1:]
+
+    if "--headless" in args:
+        preset = "minimal"
+        for i, arg in enumerate(args):
+            if arg == "--preset" and i + 1 < len(args):
+                preset = args[i + 1]
+        headless_install(preset)
+        return
+
+    if "--preset" in args:
+        idx = args.index("--preset")
+        if idx + 1 < len(args):
+            headless_install(args[idx + 1])
+            return
+
+    if "--list-presets" in args:
+        print("\nAvailable Presets:")
+        print("=" * 50)
+        for key, preset in PRESETS.items():
+            print(f"  {key:<12} {preset['name']:<20} ({len(preset['apps'])} apps)")
+            print(f"              {preset['description']}")
+        print()
+        return
+
+    # Interactive TUI mode
+    selected = curses.wrapper(lambda stdscr: AppPicker(stdscr).run())
+
+    if selected is None:
+        print("[cloverapp-picker] Cancelled.")
+        sys.exit(0)
+
+    if not selected:
+        print("[cloverapp-picker] No apps selected.")
+        sys.exit(0)
+
+    print(f"\n[cloverapp-picker] Installing {len(selected)} apps...\n")
+    for app_name in sorted(selected):
+        print(f"  -> {app_name}")
+        subprocess.run(
+            ["clovermarket", "install", app_name, "free"],
+            check=False,
+        )
+
+    print(f"\n[cloverapp-picker] Done! Run 'clovermarket list' to see installed apps.\n")
+
+
+if __name__ == "__main__":
+    main()

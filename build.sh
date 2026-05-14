@@ -67,26 +67,15 @@ log "live-build version: ${LB_VERSION_RAW}"
 
 LB_ARGS=(
     --distribution "${BASE_CODENAME}"
-    --mode debian
-    --parent-distribution "bookworm"
-    --parent-mirror-bootstrap "http://deb.debian.org/debian"
-    --parent-mirror-chroot "http://deb.debian.org/debian"
     --archive-areas "main"
     --architectures "${BASE_ARCH}"
     --mirror-bootstrap "${BASE_MIRROR}"
     --mirror-chroot "${BASE_MIRROR}"
     --mirror-chroot-security "${BASE_SECURITY_MIRROR}"
-    --mirror-binary "${BASE_MIRROR}"
-    --mirror-binary-security "${BASE_SECURITY_MIRROR}"
-    --parent-mirror-chroot-security "${BASE_SECURITY_MIRROR}"
-    --parent-mirror-binary "http://deb.debian.org/debian"
-    --parent-mirror-binary-security "${BASE_SECURITY_MIRROR}"
-    --security true
-    --updates false
     --binary-images iso-hybrid
     --iso-application "${DISTRO_NAME}"
     --iso-volume "${ISO_LABEL}"
-    --bootappend-live "boot=live components hostname=${DEFAULT_HOSTNAME} username=${DEFAULT_USER} loglevel=3"
+    --bootappend-live "boot=live components hostname=${DEFAULT_HOSTNAME} username=${DEFAULT_USER} console=tty0 nomodeset"
     --memtest none
     --apt-recommends false
     --cache true
@@ -94,15 +83,12 @@ LB_ARGS=(
     --linux-packages "linux-image"
     --linux-flavours "amd64"
     --apt-indices false
-    --initramfs live-boot
-    --initsystem systemd
-    --bootloaders grub-efi
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
 # removed in 5.x+ (Debian Bookworm / Ubuntu 24.04+)
 if lb config --help 2>&1 | grep -q -- '--updates'; then
-    LB_ARGS+=(--updates true --backports false)
+    LB_ARGS+=(--security true --updates true --backports false)
 fi
 
 # Firmware flags changed across versions
@@ -165,8 +151,19 @@ cp "${SCRIPT_DIR}/scripts/myclover-install" config/includes.chroot/usr/local/bin
 cp "${SCRIPT_DIR}/scripts/myclover-provision" config/includes.chroot/usr/local/bin/
 cp "${SCRIPT_DIR}/scripts/myclover-update" config/includes.chroot/usr/local/bin/
 cp "${SCRIPT_DIR}/scripts/cloverstack-setup" config/includes.chroot/usr/local/bin/
+
+# CloverMarket app marketplace
+if [[ -f "${SCRIPT_DIR}/scripts/clovermarket" ]]; then
+    cp "${SCRIPT_DIR}/scripts/clovermarket" config/includes.chroot/usr/local/bin/
+fi
+if [[ -f "${SCRIPT_DIR}/scripts/cloverapp-picker" ]]; then
+    cp "${SCRIPT_DIR}/scripts/cloverapp-picker" config/includes.chroot/usr/local/bin/
+fi
+
 chmod +x config/includes.chroot/usr/local/bin/myclover-*
 chmod +x config/includes.chroot/usr/local/bin/cloverstack-*
+chmod +x config/includes.chroot/usr/local/bin/clovermarket 2>/dev/null || true
+chmod +x config/includes.chroot/usr/local/bin/cloverapp-picker 2>/dev/null || true
 
 # --- Copy preseed (automated installer answers) -----------------------------
 if [[ -d "${SCRIPT_DIR}/config/live-build/preseed" ]]; then

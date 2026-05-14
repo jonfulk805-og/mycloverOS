@@ -1,0 +1,1045 @@
+#!/usr/bin/env bash
+# =============================================================================
+# clovermarket -- CloverMarket App Marketplace CLI
+# Manages self-hosted apps from the CloverMarket on mycloverOS
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CLOVERSTACK_ROOT="/opt/cloverstack"
+MARKET_ROOT="${CLOVERSTACK_ROOT}/marketplace"
+APPS_DIR="${MARKET_ROOT}/apps"
+REGISTRY_DIR="${MARKET_ROOT}/registry"
+CACHE_DIR="${MARKET_ROOT}/cache"
+CONFIG_DIR="/etc/myclover/apps"
+LICENSE_FILE="/etc/myclover/license.key"
+MARKET_API="https://market.myclover.tech/api/v1"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[clovermarket]${NC} $*"; }
+warn() { echo -e "${YELLOW}[clovermarket]${NC} WARNING: $*"; }
+err()  { echo -e "${RED}[clovermarket]${NC} ERROR: $*" >&2; }
+info() { echo -e "${BLUE}[clovermarket]${NC} $*"; }
+
+# =============================================================================
+# Initialization
+# =============================================================================
+init_dirs() {
+    mkdir -p "${APPS_DIR}" "${REGISTRY_DIR}" "${CACHE_DIR}" "${CONFIG_DIR}"
+}
+
+# =============================================================================
+# Registry & API
+# =============================================================================
+sync_registry() {
+    log "Syncing app registry from CloverMarket..."
+    if command -v curl &>/dev/null; then
+        curl -sS -o "${REGISTRY_DIR}/catalog.json" \
+             "${MARKET_API}/catalog" 2>/dev/null || {
+            warn "Could not reach CloverMarket API -- using cached catalog"
+        }
+    else
+        warn "curl not found -- using cached catalog"
+    fi
+}
+
+get_app_info() {
+    local app_name="$1"
+    local catalog="${REGISTRY_DIR}/catalog.json"
+
+    if [[ -f "${catalog}" ]]; then
+        python3 -c "
+import json, sys
+with open('${catalog}') as f:
+    catalog = json.load(f)
+for app in catalog.get('apps', []):
+    if app['name'] == '${app_name}':
+        print(json.dumps(app, indent=2))
+        sys.exit(0)
+print('{}')
+" 2>/dev/null
+    else
+        echo "{}"
+    fi
+}
+
+# =============================================================================
+# License Validation
+# =============================================================================
+get_tier() {
+    # Returns: free | apppass | apppass_plus
+    if [[ ! -f "${LICENSE_FILE}" ]]; then
+        echo "free"
+        return
+    fi
+
+    local license_data
+    license_data=$(cat "${LICENSE_FILE}" 2>/dev/null || echo "")
+
+    if echo "${license_data}" | grep -q "apppass_plus"; then
+        echo "apppass_plus"
+    elif echo "${license_data}" | grep -q "apppass"; then
+        echo "apppass"
+    else
+        echo "free"
+    fi
+}
+
+# =============================================================================
+# App Management
+# =============================================================================
+cmd_search() {
+    local query="${1:-}"
+    local catalog="${REGISTRY_DIR}/catalog.json"
+
+    sync_registry
+
+    if [[ ! -f "${catalog}" ]]; then
+        err "No catalog available. Check your internet connection."
+        exit 1
+    fi
+
+    python3 << 'PYEOF'
+import json, sys
+
+query = sys.argv[1] if len(sys.argv) > 1 else ""
+catalog_path = sys.argv[2]
+
+with open(catalog_path) as f:
+    catalog = json.load(f)
+
+apps = catalog.get("apps", [])
+if query:
+    query_lower = query.lower()
+    apps = [a for a in apps if (
+        query_lower in a.get("name", "").lower() or
+        query_lower in a.get("displayName", "").lower() or
+        query_lower in a.get("description", "").lower() or
+        any(query_lower in t.lower() for t in a.get("tags", [])) or
+        any(query_lower in c.lower() for c in a.get("categories", []))
+    )]
+
+if not apps:
+    print("No apps found.")
+    sys.exit(0)
+
+print(f"\n{'Name':<25} {'Version':<10} {'Category':<15} {'Rating':<8} {'Installs':<10}")
+print(f"{'─'*25} {'─'*10} {'─'*15} {'─'*8} {'─'*10}")
+for app in apps:
+    cats = ", ".join(app.get("categories", [])[:1])
+    rating = app.get("rating", 0)
+    stars = f"{'*' * int(rating)}"
+    installs = app.get("installCount", 0)
+    print(f"{app.get('displayName', app['name']):<25} {app.get('version', '?'):<10} {cats:<15} {stars:<8} {installs:<10}")
+print()
+PYEOF
+}
+
+cmd_info() {
+    local app_name="$1"
+
+    sync_registry
+
+    local app_json
+    app_json=$(get_app_info "${app_name}")
+
+    if [[ "${app_json}" == "{}" ]]; then
+        err "App '${app_name}' not found in registry"
+        exit 1
+    fi
+
+    python3 << PYEOF
+import json
+
+app = json.loads('''${app_json}''')
+
+print()
+print(f"  \033[1m{app.get('displayName', app['name'])}\033[0m v{app.get('version', '?')}")
+print(f"  {app.get('description', '')}")
+print()
+print(f"  Author:      {app.get('author', {}).get('name', 'Unknown')}")
+print(f"  License:     {app.get('license', 'Unknown')}")
+print(f"  Categories:  {', '.join(app.get('categories', []))}")
+print(f"  Rating:      {'*' * int(app.get('rating', 0))} ({app.get('reviewCount', 0)} reviews)")
+print(f"  Installs:    {app.get('installCount', 0)}")
+print()
+print("  Tiers:")
+for tier_name, tier_data in app.get("tiers", {}).items():
+    desc = tier_data.get("description", "")
+    features = tier_data.get("features", [])
+    price = tier_data.get("standalone_price", {})
+    price_str = ""
+    if price:
+        price_str = f" (\${price.get('monthly', 0)}/mo)"
+    print(f"    {tier_name.upper()}{price_str}: {desc}")
+    for f in features[:5]:
+        print(f"      - {f}")
+print()
+print("  Resources:")
+res = app.get("resources", {}).get("minimum", {})
+print(f"    CPU: {res.get('cpu', '?')} core(s)  |  RAM: {res.get('memory', '?')}  |  Disk: {res.get('disk', '?')}")
+if app.get("resources", {}).get("gpu"):
+    print("    GPU: Required")
+print()
+PYEOF
+}
+
+cmd_install() {
+    local app_name="$1"
+    local tier="${2:-free}"
+
+    init_dirs
+    sync_registry
+
+    # Check if already installed
+    if [[ -d "${APPS_DIR}/${app_name}" ]]; then
+        err "App '${app_name}' is already installed"
+        err "Use 'clovermarket upgrade ${app_name}' to update"
+        exit 1
+    fi
+
+    # Validate tier access
+    local user_tier
+    user_tier=$(get_tier)
+
+    case "${tier}" in
+        free) ;;
+        pro)
+            if [[ "${user_tier}" != "apppass" && "${user_tier}" != "apppass_plus" ]]; then
+                err "Pro tier requires App Pass subscription"
+                err "Subscribe at: https://myclover.tech/pricing#apppass"
+                exit 1
+            fi
+            ;;
+        enterprise)
+            if [[ "${user_tier}" != "apppass_plus" ]]; then
+                err "Enterprise tier requires App Pass+ subscription"
+                err "Subscribe at: https://myclover.tech/pricing#apppass-plus"
+                exit 1
+            fi
+            ;;
+        *)
+            err "Unknown tier: ${tier} (valid: free, pro, enterprise)"
+            exit 1
+            ;;
+    esac
+
+    log "Installing ${app_name} (${tier} tier)..."
+
+    # Download app package
+    local pkg_dir="${CACHE_DIR}/${app_name}"
+    mkdir -p "${pkg_dir}"
+
+    info "Downloading app package..."
+    if ! curl -sS -o "${pkg_dir}/package.tar.gz" \
+         "${MARKET_API}/apps/${app_name}/download?tier=${tier}" 2>/dev/null; then
+        err "Failed to download app package"
+        exit 1
+    fi
+
+    # Extract
+    info "Extracting..."
+    tar -xzf "${pkg_dir}/package.tar.gz" -C "${pkg_dir}/"
+
+    # Validate manifest
+    if [[ ! -f "${pkg_dir}/cloverapp.yml" ]]; then
+        err "Invalid app package -- missing cloverapp.yml"
+        rm -rf "${pkg_dir}"
+        exit 1
+    fi
+
+    # Check resources
+    info "Checking system resources..."
+    check_resources "${pkg_dir}/cloverapp.yml"
+
+    # Run pre-install hook
+    if [[ -f "${pkg_dir}/hooks/pre-install.sh" ]]; then
+        info "Running pre-install hook..."
+        bash "${pkg_dir}/hooks/pre-install.sh"
+    fi
+
+    # Create app directory
+    local app_dir="${APPS_DIR}/${app_name}"
+    mkdir -p "${app_dir}"
+    cp -r "${pkg_dir}/"* "${app_dir}/"
+
+    # Create config directory
+    mkdir -p "${CONFIG_DIR}/${app_name}"
+
+    # Process environment variables
+    process_env_vars "${app_dir}/cloverapp.yml" "${CONFIG_DIR}/${app_name}/.env"
+
+    # Determine compose files
+    local compose_cmd="docker compose -f ${app_dir}/docker-compose.yml"
+    local override_file
+    case "${tier}" in
+        pro)       override_file="${app_dir}/docker-compose.pro.yml" ;;
+        enterprise) override_file="${app_dir}/docker-compose.ent.yml" ;;
+        *)         override_file="${app_dir}/docker-compose.free.yml" ;;
+    esac
+    if [[ -f "${override_file}" ]]; then
+        compose_cmd="${compose_cmd} -f ${override_file}"
+    fi
+
+    # Pull images
+    info "Pulling container images..."
+    ${compose_cmd} --env-file "${CONFIG_DIR}/${app_name}/.env" pull
+
+    # Start app
+    info "Starting ${app_name}..."
+    ${compose_cmd} --env-file "${CONFIG_DIR}/${app_name}/.env" up -d
+
+    # Run post-install hook
+    if [[ -f "${app_dir}/hooks/post-install.sh" ]]; then
+        info "Running post-install hook..."
+        bash "${app_dir}/hooks/post-install.sh"
+    fi
+
+    # Save install metadata
+    cat > "${app_dir}/.clovermarket-meta" << EOF
+app=${app_name}
+tier=${tier}
+installed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+version=$(grep 'version:' "${app_dir}/cloverapp.yml" | head -1 | awk '{print $2}')
+EOF
+
+    # Register with Traefik if needed
+    setup_traefik_routes "${app_dir}/cloverapp.yml" "${app_name}"
+
+    # Register with NetMon health checks
+    setup_healthcheck "${app_dir}/cloverapp.yml" "${app_name}"
+
+    log "App '${app_name}' installed successfully (${tier} tier)"
+
+    # Show access info
+    show_access_info "${app_name}"
+}
+
+cmd_remove() {
+    local app_name="$1"
+    local app_dir="${APPS_DIR}/${app_name}"
+
+    if [[ ! -d "${app_dir}" ]]; then
+        err "App '${app_name}' is not installed"
+        exit 1
+    fi
+
+    # Confirm removal
+    echo -e "${YELLOW}WARNING: This will remove ${app_name} and all its data.${NC}"
+    read -rp "Continue? [y/N] " confirm
+    if [[ "${confirm}" != "y" && "${confirm}" != "Y" ]]; then
+        log "Cancelled."
+        exit 0
+    fi
+
+    # Run pre-remove hook
+    if [[ -f "${app_dir}/hooks/pre-remove.sh" ]]; then
+        info "Running pre-remove hook..."
+        bash "${app_dir}/hooks/pre-remove.sh"
+    fi
+
+    # Get tier from metadata
+    local tier="free"
+    if [[ -f "${app_dir}/.clovermarket-meta" ]]; then
+        tier=$(grep '^tier=' "${app_dir}/.clovermarket-meta" | cut -d= -f2)
+    fi
+
+    # Stop and remove containers
+    local compose_cmd="docker compose -f ${app_dir}/docker-compose.yml"
+    local override_file
+    case "${tier}" in
+        pro)       override_file="${app_dir}/docker-compose.pro.yml" ;;
+        enterprise) override_file="${app_dir}/docker-compose.ent.yml" ;;
+        *)         override_file="${app_dir}/docker-compose.free.yml" ;;
+    esac
+    if [[ -f "${override_file}" ]]; then
+        compose_cmd="${compose_cmd} -f ${override_file}"
+    fi
+
+    info "Stopping ${app_name}..."
+    ${compose_cmd} down -v 2>/dev/null || true
+
+    # Remove Traefik routes
+    rm -f "/etc/myclover/traefik/dynamic/app-${app_name}.yml"
+
+    # Remove app directory
+    rm -rf "${app_dir}"
+    rm -rf "${CONFIG_DIR}/${app_name}"
+    rm -rf "${CACHE_DIR}/${app_name}"
+
+    log "App '${app_name}' removed."
+}
+
+cmd_upgrade() {
+    local app_name="$1"
+    local app_dir="${APPS_DIR}/${app_name}"
+
+    if [[ ! -d "${app_dir}" ]]; then
+        err "App '${app_name}' is not installed"
+        exit 1
+    fi
+
+    # Get current version and tier
+    local current_version="0.0.0"
+    local tier="free"
+    if [[ -f "${app_dir}/.clovermarket-meta" ]]; then
+        current_version=$(grep '^version=' "${app_dir}/.clovermarket-meta" | cut -d= -f2)
+        tier=$(grep '^tier=' "${app_dir}/.clovermarket-meta" | cut -d= -f2)
+    fi
+
+    sync_registry
+
+    local app_json
+    app_json=$(get_app_info "${app_name}")
+    local latest_version
+    latest_version=$(echo "${app_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version','0.0.0'))" 2>/dev/null || echo "0.0.0")
+
+    if [[ "${current_version}" == "${latest_version}" ]]; then
+        log "${app_name} is already at the latest version (${current_version})"
+        exit 0
+    fi
+
+    log "Upgrading ${app_name}: ${current_version} -> ${latest_version}"
+
+    # Run pre-upgrade hook
+    if [[ -f "${app_dir}/hooks/pre-upgrade.sh" ]]; then
+        info "Running pre-upgrade hook..."
+        bash "${app_dir}/hooks/pre-upgrade.sh"
+    fi
+
+    # Download new version
+    local pkg_dir="${CACHE_DIR}/${app_name}"
+    mkdir -p "${pkg_dir}"
+    curl -sS -o "${pkg_dir}/package.tar.gz" \
+         "${MARKET_API}/apps/${app_name}/download?tier=${tier}" 2>/dev/null || {
+        err "Failed to download update"
+        exit 1
+    }
+
+    # Extract to temp, merge config
+    local tmp_dir="${CACHE_DIR}/${app_name}-upgrade"
+    mkdir -p "${tmp_dir}"
+    tar -xzf "${pkg_dir}/package.tar.gz" -C "${tmp_dir}/"
+
+    # Stop current version
+    info "Stopping current version..."
+    local compose_cmd="docker compose -f ${app_dir}/docker-compose.yml"
+    ${compose_cmd} down 2>/dev/null || true
+
+    # Backup current app data
+    info "Backing up current data..."
+    tar -czf "${CACHE_DIR}/${app_name}-backup-${current_version}.tar.gz" \
+        -C "${APPS_DIR}" "${app_name}" 2>/dev/null || true
+
+    # Replace app files (preserve config)
+    cp -r "${tmp_dir}/"* "${app_dir}/"
+    rm -rf "${tmp_dir}"
+
+    # Pull new images and start
+    info "Pulling updated images..."
+    ${compose_cmd} --env-file "${CONFIG_DIR}/${app_name}/.env" pull
+    info "Starting ${app_name}..."
+    ${compose_cmd} --env-file "${CONFIG_DIR}/${app_name}/.env" up -d
+
+    # Run post-upgrade hook
+    if [[ -f "${app_dir}/hooks/post-upgrade.sh" ]]; then
+        info "Running post-upgrade hook..."
+        bash "${app_dir}/hooks/post-upgrade.sh"
+    fi
+
+    # Update metadata
+    sed -i "s/^version=.*/version=${latest_version}/" "${app_dir}/.clovermarket-meta"
+
+    log "Upgraded ${app_name} to ${latest_version}"
+}
+
+cmd_tier() {
+    local app_name="$1"
+    local new_tier="$2"
+    local app_dir="${APPS_DIR}/${app_name}"
+
+    if [[ ! -d "${app_dir}" ]]; then
+        err "App '${app_name}' is not installed"
+        exit 1
+    fi
+
+    # Validate tier access
+    local user_tier
+    user_tier=$(get_tier)
+
+    case "${new_tier}" in
+        free) ;;
+        pro)
+            if [[ "${user_tier}" != "apppass" && "${user_tier}" != "apppass_plus" ]]; then
+                err "Pro tier requires App Pass subscription"
+                exit 1
+            fi
+            ;;
+        enterprise)
+            if [[ "${user_tier}" != "apppass_plus" ]]; then
+                err "Enterprise tier requires App Pass+ subscription"
+                exit 1
+            fi
+            ;;
+        *)
+            err "Unknown tier: ${new_tier}"
+            exit 1
+            ;;
+    esac
+
+    log "Switching ${app_name} to ${new_tier} tier..."
+
+    # Stop current
+    local compose_cmd="docker compose -f ${app_dir}/docker-compose.yml"
+    ${compose_cmd} down 2>/dev/null || true
+
+    # Restart with new tier overrides
+    local override_file
+    case "${new_tier}" in
+        pro)       override_file="${app_dir}/docker-compose.pro.yml" ;;
+        enterprise) override_file="${app_dir}/docker-compose.ent.yml" ;;
+        *)         override_file="${app_dir}/docker-compose.free.yml" ;;
+    esac
+
+    compose_cmd="docker compose -f ${app_dir}/docker-compose.yml"
+    if [[ -f "${override_file}" ]]; then
+        compose_cmd="${compose_cmd} -f ${override_file}"
+    fi
+
+    ${compose_cmd} --env-file "${CONFIG_DIR}/${app_name}/.env" up -d
+
+    # Update metadata
+    sed -i "s/^tier=.*/tier=${new_tier}/" "${app_dir}/.clovermarket-meta"
+
+    log "Switched ${app_name} to ${new_tier} tier"
+}
+
+cmd_list_installed() {
+    echo ""
+    echo -e "${BOLD}Installed CloverApps${NC}"
+    echo "===================="
+    echo ""
+
+    local found=false
+    for app_dir in "${APPS_DIR}"/*/; do
+        [[ -d "${app_dir}" ]] || continue
+        found=true
+
+        local app_name
+        app_name=$(basename "${app_dir}")
+        local tier="free"
+        local version="?"
+        local installed="?"
+
+        if [[ -f "${app_dir}/.clovermarket-meta" ]]; then
+            tier=$(grep '^tier=' "${app_dir}/.clovermarket-meta" | cut -d= -f2)
+            version=$(grep '^version=' "${app_dir}/.clovermarket-meta" | cut -d= -f2)
+            installed=$(grep '^installed=' "${app_dir}/.clovermarket-meta" | cut -d= -f2 | cut -dT -f1)
+        fi
+
+        # Check if running
+        local status="stopped"
+        if docker compose -f "${app_dir}/docker-compose.yml" ps --status running 2>/dev/null | grep -q "running"; then
+            status="${GREEN}running${NC}"
+        else
+            status="${RED}stopped${NC}"
+        fi
+
+        printf "  %-25s v%-10s %-12s %b\n" "${app_name}" "${version}" "[${tier}]" "${status}"
+    done
+
+    if [[ "${found}" == "false" ]]; then
+        echo "  No apps installed yet."
+        echo ""
+        echo "  Browse apps:     clovermarket search"
+        echo "  Install an app:  clovermarket install <app-name>"
+    fi
+    echo ""
+}
+
+cmd_status() {
+    local user_tier
+    user_tier=$(get_tier)
+
+    echo ""
+    echo -e "${BOLD}CloverMarket Status${NC}"
+    echo "==================="
+    echo ""
+    echo -e "  Subscription:  ${CYAN}${user_tier}${NC}"
+    echo -e "  Market API:    ${MARKET_API}"
+    echo -e "  Apps dir:      ${APPS_DIR}"
+    echo ""
+
+    # Count installed apps
+    local count=0
+    for app_dir in "${APPS_DIR}"/*/; do
+        [[ -d "${app_dir}" ]] && ((count++))
+    done
+    echo -e "  Installed apps: ${count}"
+    echo ""
+
+    # Show tier info
+    case "${user_tier}" in
+        free)
+            echo -e "  ${YELLOW}Upgrade to App Pass for Pro features on all apps:${NC}"
+            echo "    https://myclover.tech/pricing#apppass"
+            ;;
+        apppass)
+            echo -e "  ${GREEN}App Pass active -- Pro tier unlocked on all apps${NC}"
+            echo ""
+            echo -e "  ${YELLOW}Upgrade to App Pass+ for Enterprise features:${NC}"
+            echo "    https://myclover.tech/pricing#apppass-plus"
+            ;;
+        apppass_plus)
+            echo -e "  ${GREEN}App Pass+ active -- Enterprise tier unlocked on all apps${NC}"
+            ;;
+    esac
+    echo ""
+}
+
+cmd_validate() {
+    local manifest_path="${1:-cloverapp.yml}"
+
+    if [[ ! -f "${manifest_path}" ]]; then
+        err "Manifest not found: ${manifest_path}"
+        exit 1
+    fi
+
+    log "Validating ${manifest_path}..."
+
+    python3 << PYEOF
+import yaml, sys, os
+
+errors = []
+warnings = []
+
+manifest_path = "${manifest_path}"
+with open(manifest_path) as f:
+    try:
+        m = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        print(f"  [FAIL] Invalid YAML: {e}")
+        sys.exit(1)
+
+# Required fields
+required = [
+    ("apiVersion", "cloverapp/v1"),
+    ("kind", "CloverApp"),
+]
+for field, expected in required:
+    val = m.get(field)
+    if val is None:
+        errors.append(f"Missing required field: {field}")
+    elif expected and val != expected:
+        errors.append(f"{field} must be '{expected}', got '{val}'")
+
+# Metadata
+meta = m.get("metadata", {})
+for field in ["name", "displayName", "version", "description", "author", "license", "icon"]:
+    if field not in meta:
+        errors.append(f"Missing metadata.{field}")
+
+name = meta.get("name", "")
+if name and (not name.islower() or " " in name):
+    errors.append("metadata.name must be lowercase with hyphens, no spaces")
+
+desc = meta.get("description", "")
+if len(desc) > 160:
+    warnings.append(f"metadata.description is {len(desc)} chars (max 160)")
+
+# Categories
+cats = m.get("categories", [])
+valid_cats = {"productivity", "business", "media", "security", "networking",
+              "dev-tools", "iot", "ai-ml", "communication", "storage",
+              "monitoring", "gaming", "home-automation", "education",
+              "finance", "health"}
+if not cats:
+    errors.append("At least one category required")
+for c in cats:
+    if c not in valid_cats:
+        warnings.append(f"Unknown category: {c}")
+
+# Tiers
+tiers = m.get("tiers", {})
+if "free" not in tiers:
+    errors.append("Free tier is required -- every app must have a free tier")
+
+# Resources
+res = m.get("resources", {})
+if "minimum" not in res:
+    errors.append("resources.minimum is required")
+
+# Docker Compose
+compose_dir = os.path.dirname(os.path.abspath(manifest_path))
+base_compose = os.path.join(compose_dir, "docker-compose.yml")
+if not os.path.exists(base_compose):
+    errors.append("docker-compose.yml not found in app directory")
+
+# Icon
+icon_path = meta.get("icon", "")
+if icon_path:
+    full_icon = os.path.join(compose_dir, icon_path)
+    if not os.path.exists(full_icon):
+        errors.append(f"Icon file not found: {icon_path}")
+
+# Print results
+print()
+if errors:
+    for e in errors:
+        print(f"  \033[0;31m[FAIL]\033[0m {e}")
+if warnings:
+    for w in warnings:
+        print(f"  \033[1;33m[WARN]\033[0m {w}")
+if not errors and not warnings:
+    print("  \033[0;32m[PASS]\033[0m All checks passed")
+elif not errors:
+    print(f"\n  \033[0;32m[PASS]\033[0m Validation passed with {len(warnings)} warning(s)")
+else:
+    print(f"\n  \033[0;31m[FAIL]\033[0m {len(errors)} error(s), {len(warnings)} warning(s)")
+    sys.exit(1)
+print()
+PYEOF
+}
+
+cmd_submit() {
+    local app_dir="${1:-.}"
+
+    if [[ ! -f "${app_dir}/cloverapp.yml" ]]; then
+        err "No cloverapp.yml found in ${app_dir}"
+        err "Run from your app directory or: clovermarket submit /path/to/app"
+        exit 1
+    fi
+
+    # Validate first
+    cmd_validate "${app_dir}/cloverapp.yml" || exit 1
+
+    log "Packaging app for submission..."
+
+    # Create submission tarball
+    local app_name
+    app_name=$(python3 -c "
+import yaml
+with open('${app_dir}/cloverapp.yml') as f:
+    m = yaml.safe_load(f)
+print(m.get('metadata', {}).get('name', 'unknown'))
+")
+    local version
+    version=$(python3 -c "
+import yaml
+with open('${app_dir}/cloverapp.yml') as f:
+    m = yaml.safe_load(f)
+print(m.get('metadata', {}).get('version', '0.0.0'))
+")
+
+    local tarball="${app_name}-${version}.cloverapp.tar.gz"
+    tar -czf "${tarball}" -C "${app_dir}" .
+
+    log "Created: ${tarball}"
+
+    # Submit to API
+    info "Submitting to CloverMarket for review..."
+    local response
+    response=$(curl -sS -X POST \
+        -H "Content-Type: application/gzip" \
+        -H "Authorization: Bearer $(cat /etc/myclover/creator-token 2>/dev/null || echo 'none')" \
+        --data-binary "@${tarball}" \
+        "${MARKET_API}/apps/submit" 2>/dev/null) || {
+        warn "Could not reach CloverMarket API"
+        warn "Save ${tarball} and submit manually at: https://creator.myclover.tech/submit"
+        exit 0
+    }
+
+    log "Submitted! Your app is now in review."
+    info "Track status at: https://creator.myclover.tech/apps/${app_name}"
+    echo ""
+}
+
+cmd_update_all() {
+    log "Checking all installed apps for updates..."
+
+    sync_registry
+
+    local updates=0
+    for app_dir in "${APPS_DIR}"/*/; do
+        [[ -d "${app_dir}" ]] || continue
+        local app_name
+        app_name=$(basename "${app_dir}")
+
+        local current_version="0.0.0"
+        if [[ -f "${app_dir}/.clovermarket-meta" ]]; then
+            current_version=$(grep '^version=' "${app_dir}/.clovermarket-meta" | cut -d= -f2)
+        fi
+
+        local app_json
+        app_json=$(get_app_info "${app_name}")
+        local latest_version
+        latest_version=$(echo "${app_json}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version','0.0.0'))" 2>/dev/null || echo "0.0.0")
+
+        if [[ "${current_version}" != "${latest_version}" && "${latest_version}" != "0.0.0" ]]; then
+            info "${app_name}: ${current_version} -> ${latest_version}"
+            ((updates++))
+        fi
+    done
+
+    if [[ ${updates} -eq 0 ]]; then
+        log "All apps are up to date."
+    else
+        echo ""
+        read -rp "Upgrade ${updates} app(s)? [y/N] " confirm
+        if [[ "${confirm}" == "y" || "${confirm}" == "Y" ]]; then
+            for app_dir in "${APPS_DIR}"/*/; do
+                [[ -d "${app_dir}" ]] || continue
+                local app_name
+                app_name=$(basename "${app_dir}")
+                cmd_upgrade "${app_name}"
+            done
+        fi
+    fi
+}
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+check_resources() {
+    local manifest="$1"
+    # Resource checking done in Python for YAML parsing
+    python3 << PYEOF
+import yaml, os, subprocess
+
+with open("${manifest}") as f:
+    m = yaml.safe_load(f)
+
+res = m.get("resources", {}).get("minimum", {})
+req_cpu = res.get("cpu", 1)
+
+# Parse memory (e.g. "512M", "1G")
+req_mem_str = str(res.get("memory", "256M"))
+if req_mem_str.endswith("G"):
+    req_mem_mb = float(req_mem_str[:-1]) * 1024
+elif req_mem_str.endswith("M"):
+    req_mem_mb = float(req_mem_str[:-1])
+else:
+    req_mem_mb = 256
+
+# Check available
+cpu_count = os.cpu_count() or 1
+mem_info = open("/proc/meminfo").read()
+mem_total = 0
+for line in mem_info.split("\n"):
+    if line.startswith("MemAvailable:"):
+        mem_total = int(line.split()[1]) / 1024  # KB -> MB
+        break
+
+if cpu_count < req_cpu:
+    print(f"  WARNING: App needs {req_cpu} CPU(s), system has {cpu_count}")
+if mem_total < req_mem_mb:
+    print(f"  WARNING: App needs {req_mem_mb}MB RAM, {int(mem_total)}MB available")
+PYEOF
+}
+
+process_env_vars() {
+    local manifest="$1"
+    local env_file="$2"
+
+    python3 << PYEOF
+import yaml, secrets, string, os
+
+with open("${manifest}") as f:
+    m = yaml.safe_load(f)
+
+env_vars = m.get("env", [])
+env_lines = []
+
+for var in env_vars:
+    name = var["name"]
+    default = var.get("default", "")
+    generate = var.get("generate", False)
+    length = var.get("length", 32)
+
+    if generate:
+        chars = string.ascii_letters + string.digits
+        value = "".join(secrets.choice(chars) for _ in range(length))
+    elif default:
+        value = default
+    else:
+        value = ""
+
+    env_lines.append(f"{name}={value}")
+
+with open("${env_file}", "w") as f:
+    f.write("\n".join(env_lines) + "\n")
+PYEOF
+}
+
+setup_traefik_routes() {
+    local manifest="$1"
+    local app_name="$2"
+    local traefik_dir="/etc/myclover/traefik/dynamic"
+
+    mkdir -p "${traefik_dir}"
+
+    python3 << PYEOF
+import yaml
+
+with open("${manifest}") as f:
+    m = yaml.safe_load(f)
+
+ports = m.get("networking", {}).get("ports", [])
+routes = []
+
+for port in ports:
+    if port.get("traefik_route"):
+        subdomain = port.get("subdomain", "${app_name}")
+        container_port = port.get("container_port", 8080)
+        routes.append({
+            "subdomain": subdomain,
+            "port": container_port,
+            "name": port.get("name", "web"),
+        })
+
+if routes:
+    config = """# Auto-generated by CloverMarket for ${app_name}
+http:
+  routers:"""
+    for r in routes:
+        config += f"""
+    {r['name']}-{r['subdomain']}:
+      rule: "Host(\`{r['subdomain']}.local.cloverstack\`)"
+      service: {r['name']}-{r['subdomain']}
+      tls:
+        certResolver: letsencrypt"""
+    config += """
+  services:"""
+    for r in routes:
+        config += f"""
+    {r['name']}-{r['subdomain']}:
+      loadBalancer:
+        servers:
+          - url: "http://{r['subdomain']}:{r['port']}" """
+
+    with open("${traefik_dir}/app-${app_name}.yml", "w") as f:
+        f.write(config)
+PYEOF
+}
+
+setup_healthcheck() {
+    local manifest="$1"
+    local app_name="$2"
+    # Register health check endpoint with NetMon if configured
+    # This is a placeholder for the NetMon integration API
+    :
+}
+
+show_access_info() {
+    local app_name="$1"
+    local app_dir="${APPS_DIR}/${app_name}"
+
+    echo ""
+    echo -e "${BOLD}Access Information${NC}"
+    echo "=================="
+
+    if [[ -f "${app_dir}/cloverapp.yml" ]]; then
+        python3 << PYEOF
+import yaml
+
+with open("${app_dir}/cloverapp.yml") as f:
+    m = yaml.safe_load(f)
+
+ports = m.get("networking", {}).get("ports", [])
+for port in ports:
+    subdomain = port.get("subdomain", "${app_name}")
+    if port.get("traefik_route"):
+        print(f"  Web UI:  https://{subdomain}.local.cloverstack")
+    else:
+        print(f"  Port:    {port.get('container_port', '?')}")
+
+print(f"  Config:  /etc/myclover/apps/${app_name}/")
+print(f"  Logs:    clovermarket logs ${app_name}")
+PYEOF
+    fi
+    echo ""
+}
+
+cmd_logs() {
+    local app_name="$1"
+    local app_dir="${APPS_DIR}/${app_name}"
+
+    if [[ ! -d "${app_dir}" ]]; then
+        err "App '${app_name}' is not installed"
+        exit 1
+    fi
+
+    docker compose -f "${app_dir}/docker-compose.yml" logs -f --tail=100
+}
+
+# =============================================================================
+# Usage
+# =============================================================================
+usage() {
+    cat << EOF
+
+${BOLD}CloverMarket${NC} v${VERSION} -- Self-Hosted App Marketplace for mycloverOS
+
+${BOLD}USAGE:${NC}
+    clovermarket <command> [arguments]
+
+${BOLD}BROWSE & DISCOVER:${NC}
+    search [query]           Search the app marketplace
+    info <app>               Show detailed app information
+    status                   Show CloverMarket status & subscription
+
+${BOLD}APP MANAGEMENT:${NC}
+    install <app> [tier]     Install an app (tier: free|pro|enterprise)
+    remove <app>             Remove an installed app
+    upgrade <app>            Upgrade an app to latest version
+    update                   Check & upgrade all installed apps
+    tier <app> <tier>        Switch app tier (free/pro/enterprise)
+    list                     List installed apps
+    logs <app>               View app logs
+
+${BOLD}CREATOR TOOLS:${NC}
+    validate [manifest]      Validate a cloverapp.yml manifest
+    submit [dir]             Submit app for marketplace review
+
+${BOLD}EXAMPLES:${NC}
+    clovermarket search "project management"
+    clovermarket install wiki-server
+    clovermarket install kanban-board pro
+    clovermarket tier kanban-board enterprise
+    clovermarket update
+
+EOF
+}
+
+# =============================================================================
+# Main Dispatch
+# =============================================================================
+init_dirs
+
+COMMAND="${1:-}"
+ARG1="${2:-}"
+ARG2="${3:-}"
+
+case "${COMMAND}" in
+    search)     cmd_search "${ARG1}" ;;
+    info)       [[ -n "${ARG1}" ]] && cmd_info "${ARG1}" || usage ;;
+    install)    [[ -n "${ARG1}" ]] && cmd_install "${ARG1}" "${ARG2}" || usage ;;
+    remove)     [[ -n "${ARG1}" ]] && cmd_remove "${ARG1}" || usage ;;
+    upgrade)    [[ -n "${ARG1}" ]] && cmd_upgrade "${ARG1}" || usage ;;
+    update)     cmd_update_all ;;
+    tier)       [[ -n "${ARG1}" && -n "${ARG2}" ]] && cmd_tier "${ARG1}" "${ARG2}" || usage ;;
+    list)       cmd_list_installed ;;
+    logs)       [[ -n "${ARG1}" ]] && cmd_logs "${ARG1}" || usage ;;
+    status)     cmd_status ;;
+    validate)   cmd_validate "${ARG1:-cloverapp.yml}" ;;
+    submit)     cmd_submit "${ARG1:-.}" ;;
+    *)          usage ;;
+esac

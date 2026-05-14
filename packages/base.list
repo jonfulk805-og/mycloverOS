@@ -10,14 +10,13 @@ dbus
 udev
 init
 
-# --- Bootloader (GRUB for UEFI + BIOS boot) ---
-grub-efi-amd64-bin
-grub-pc-bin
-grub-common
-mtools
-dosfstools
-
-# --- Kernel ---
+# --- Live system (REQUIRED for live CD boot) ---
+# live-boot: initramfs hooks that find and mount the squashfs live filesystem
+# live-config: live session setup (user creation, autologin, hostname, locale)
+# Without these the kernel boots but drops to a blank screen / blinking cursor
+live-boot
+live-config
+live-config-systemd
 
 # --- Shell & utilities ---
 bash
