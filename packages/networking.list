@@ -4,8 +4,7 @@
 # =============================================================================
 
 # --- VPN ---
-wireguard
-wireguard-tools
+# wireguard + wireguard-tools already in cloverstack.list
 openvpn
 
 # --- Mesh / routing ---
@@ -38,8 +37,7 @@ traceroute
 whois
 
 # --- SNMP ---
-snmp
-snmpd
+# snmp + snmpd already in cloverstack.list
 
 # --- LLDP ---
 lldpd
