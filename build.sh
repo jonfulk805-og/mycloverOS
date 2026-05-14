@@ -141,6 +141,11 @@ cp "${SCRIPT_DIR}/packages/cloverstack.list" config/package-lists/cloverstack.li
 cp "${SCRIPT_DIR}/packages/networking.list" config/package-lists/networking.list.chroot
 cp "${SCRIPT_DIR}/packages/hardware.list" config/package-lists/hardware.list.chroot
 
+# CloverMarket
+if [[ -f "${SCRIPT_DIR}/packages/clovermarket.list" ]]; then
+    cp "${SCRIPT_DIR}/packages/clovermarket.list" config/package-lists/clovermarket.list.chroot
+fi
+
 # --- Copy filesystem overlay -------------------------------------------------
 log "Installing filesystem overlay..."
 if [[ -d "${SCRIPT_DIR}/overlay" ]]; then
@@ -165,8 +170,10 @@ cp "${SCRIPT_DIR}/scripts/myclover-install" config/includes.chroot/usr/local/bin
 cp "${SCRIPT_DIR}/scripts/myclover-provision" config/includes.chroot/usr/local/bin/
 cp "${SCRIPT_DIR}/scripts/myclover-update" config/includes.chroot/usr/local/bin/
 cp "${SCRIPT_DIR}/scripts/cloverstack-setup" config/includes.chroot/usr/local/bin/
+cp "${SCRIPT_DIR}/scripts/clovermarket-ctl" config/includes.chroot/usr/local/bin/
 chmod +x config/includes.chroot/usr/local/bin/myclover-*
 chmod +x config/includes.chroot/usr/local/bin/cloverstack-*
+chmod +x config/includes.chroot/usr/local/bin/clovermarket-*
 
 # --- Copy preseed (automated installer answers) -----------------------------
 if [[ -d "${SCRIPT_DIR}/config/live-build/preseed" ]]; then

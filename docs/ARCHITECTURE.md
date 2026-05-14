@@ -23,6 +23,11 @@ mycloverOS is a custom Debian-based Linux distribution that serves as the founda
 |  |  | Clover   | | Clover   | | Clover   | | Stream   |      |  |
 |  |  | Media    | | Sign     | | POS      | | Server   |      |  |
 |  |  +----------+ +----------+ +----------+ +----------+      |  |
+|  |  +----------+ +------------------------------------------+ |  |
+|  |  | Clover   | | CloverApps (user-installed via market)    | |  |
+|  |  | Market   | | [App A] [App B] [App C] ...               | |  |
+|  |  | (:8090)  | +------------------------------------------+ |  |
+|  |  +----------+                                              |  |
 |  |                                                            |  |
 |  |  +----------+ +----------+                                 |  |
 |  |  | Traefik  | | Portainer|  (reverse proxy + management)   |  |
@@ -58,6 +63,17 @@ mycloverOS is a custom Debian-based Linux distribution that serves as the founda
 - Managed by `cloverstack-ctl` CLI tool
 - Enable/disable per deployment
 - Shared data in `/var/lib/cloverstack/`
+
+### Layer 3.5: CloverMarket (App Marketplace)
+- On-device app marketplace: browse, install, update, remove CloverApps
+- Marketplace server runs as Docker container on port 8090
+- CLI: `clovermarket-ctl` (or `cloverstack-ctl market`)
+- Each app = Docker image + `cloverapp.yml` manifest + optional `wizard.yml`
+- Theme engine: 5 built-in `.clover-theme` files (40 CSS tokens each)
+- Startup wizard framework: step-by-step setup UI for each app
+- CloverCoin digital wallet for in-marketplace transactions
+- Registry syncs from `market.myclover.tech` or works offline
+- See [docs/CLOVERMARKET.md](CLOVERMARKET.md) for full details
 
 ### Layer 4: AI Engine
 - Ollama runs natively (not containerized) for GPU access
@@ -101,18 +117,28 @@ Power On
 │   │   └── modules.d/      # Module enable/disable flags
 │   └── os-release          # Standard OS identification
 ├── opt/
-│   └── cloverstack/        # CloverStack application root
-│       ├── modules/        # Docker Compose stacks per module
-│       ├── traefik/        # Reverse proxy config
-│       ├── data/           # Shared application data
-│       ├── config/         # Shared configuration
-│       └── backups/        # Local backup storage
+│   ├── cloverstack/        # CloverStack application root
+│   │   ├── modules/        # Docker Compose stacks per module
+│   │   │   └── clovermarket/  # Marketplace server module
+│   │   ├── themes/         # Theme engine
+│   │   │   ├── builtin/    # 5 built-in .clover-theme files
+│   │   │   └── custom/     # User-imported themes
+│   │   ├── traefik/        # Reverse proxy config
+│   │   ├── data/           # Shared application data
+│   │   ├── config/         # Shared configuration
+│   │   └── backups/        # Local backup storage
+│   └── clovermarket/       # CloverMarket data
+│       ├── apps/           # Installed CloverApps
+│       ├── cache/          # Registry cache
+│       └── wizards/        # Shared wizard resources
 ├── var/
 │   ├── lib/cloverstack/    # Persistent module state
+│   ├── lib/clovermarket/   # Marketplace state (wallet, etc.)
 │   └── log/cloverstack/    # Centralized logs
 └── usr/
     ├── local/bin/          # mycloverOS scripts
     │   ├── cloverstack-ctl
+    │   ├── clovermarket-ctl  # Marketplace CLI
     │   ├── myclover-install
     │   ├── myclover-provision
     │   └── myclover-update

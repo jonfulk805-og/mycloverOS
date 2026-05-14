@@ -1,0 +1,121 @@
+# =============================================================================
+# cloverapp.yml — CloverApp Manifest
+# =============================================================================
+# Every CloverMarket app includes this file at its root.
+# It tells CloverMarket how to install, configure, run, and display the app.
+# =============================================================================
+
+app:
+  id: my-awesome-app               # Unique ID (lowercase, hyphens ok)
+  name: My Awesome App              # Display name
+  version: 1.0.0                    # Semantic version
+  description: >
+    A sample CloverApp that demonstrates the manifest format.
+    This description appears on the marketplace listing.
+  author:
+    name: Jane Developer
+    email: jane@example.com
+    url: https://janedev.com
+  license: MIT
+  homepage: https://github.com/janedev/my-awesome-app
+  repository: https://github.com/janedev/my-awesome-app
+  icon: 🚀                          # Emoji or URL to icon image
+
+# --- Marketplace listing ------------------------------------------------------
+marketplace:
+  category: Productivity             # Category: Productivity, Database, Media, DevOps, AI, etc.
+  tags: [todo, tasks, productivity]
+  screenshots:                       # Optional screenshots
+    - url: https://example.com/screenshot1.png
+      caption: Dashboard view
+    - url: https://example.com/screenshot2.png
+      caption: Settings page
+  short_description: A beautiful task manager for your Clover server
+  official: false                    # Set by MyClover.Tech for verified apps
+  featured: false                    # Highlighted in marketplace
+
+# --- Pricing ------------------------------------------------------------------
+pricing:
+  model: freemium                    # free | freemium | paid | subscription
+  free_tier:
+    description: Up to 100 tasks, 1 user
+    limits:
+      max_users: 1
+      max_items: 100
+  paid_tiers:
+    - name: Pro
+      price_cc: 500                  # CloverCoin price
+      price_usd: 4.99               # USD equivalent
+      stripe_price_id: price_xxx     # Optional Stripe integration
+      features: [unlimited_tasks, 5_users, api_access]
+    - name: Enterprise
+      price_cc: 2000
+      price_usd: 19.99
+      features: [unlimited_everything, priority_support, custom_branding]
+
+# --- Container ----------------------------------------------------------------
+container:
+  image: janedev/my-awesome-app:1.0  # Docker image
+  build:                             # Optional: build from source
+    context: .
+    dockerfile: Dockerfile
+  ports:
+    - container: 3000                # App listens on port 3000
+      host: 3000                     # Expose on host port 3000
+      protocol: tcp
+  environment:
+    APP_NAME: My Awesome App
+    DATABASE_URL: sqlite:///data/app.db
+    SECRET_KEY: "{{GENERATED_SECRET}}"   # Auto-generated at install time
+  resources:
+    memory: 256m                     # Memory limit
+    cpus: 0.5                        # CPU limit
+  restart: unless-stopped
+  healthcheck:
+    endpoint: /health
+    interval: 30s
+    timeout: 5s
+
+# --- Networking ---------------------------------------------------------------
+networking:
+  subdomain: tasks                   # Auto-route: tasks.local → this app
+  traefik:
+    enabled: true
+    middlewares: []                   # Optional Traefik middleware chain
+
+# --- Data & Persistence -------------------------------------------------------
+data:
+  volumes:
+    - name: app-data
+      mount: /data                   # Container mount path
+      description: Application database and uploads
+    - name: app-config
+      mount: /config
+      description: App configuration files
+  backup:
+    enabled: true
+    paths: [/data]
+    schedule: "0 2 * * *"            # Daily at 2 AM
+
+# --- Integrations -------------------------------------------------------------
+integrations:
+  chappie:                           # AI integration via Chappie (Ollama)
+    enabled: true
+    capabilities: [chat, summarize]
+    model: phi3:mini
+  cloverbase:                        # Database integration
+    enabled: false
+    type: postgres
+  vault:                             # SSO / auth via myclover-vault
+    enabled: true
+    scopes: [profile, email]
+
+# --- Theme support ------------------------------------------------------------
+theme:
+  enabled: true                      # Accept CloverMarket theme tokens
+  custom_css: true                   # Allow user CSS overrides
+
+# --- Wizard -------------------------------------------------------------------
+wizard:
+  enabled: true                      # Has a startup wizard
+  file: wizard.yml                   # Wizard definition file

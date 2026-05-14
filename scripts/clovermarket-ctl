@@ -1,0 +1,929 @@
+#!/usr/bin/env bash
+# =============================================================================
+# clovermarket-ctl -- CloverMarket app marketplace CLI
+# Manages the on-device CloverMarket: browse, install, update, remove apps
+# =============================================================================
+set -euo pipefail
+
+VERSION="0.1.0"
+MARKET_ROOT="/opt/clovermarket"
+APPS_DIR="${MARKET_ROOT}/apps"
+CACHE_DIR="${MARKET_ROOT}/cache"
+WIZARDS_DIR="${MARKET_ROOT}/wizards"
+THEMES_DIR="/opt/cloverstack/themes"
+CLOVERSTACK_ROOT="/opt/cloverstack"
+MARKET_CONFIG="/etc/myclover/clovermarket.conf"
+WALLET_FILE="/var/lib/clovermarket/wallet.json"
+REGISTRY_CACHE="${CACHE_DIR}/registry.json"
+REGISTRY_URL="${CLOVERMARKET_REGISTRY:-https://market.myclover.tech/api/v1}"
+
+# --- Colors ------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[clovermarket]${NC} $*"; }
+warn() { echo -e "${YELLOW}[clovermarket]${NC} $*"; }
+err()  { echo -e "${RED}[clovermarket]${NC} $*" >&2; }
+info() { echo -e "${CYAN}[clovermarket]${NC} $*"; }
+
+# --- Helpers -----------------------------------------------------------------
+ensure_dirs() {
+    mkdir -p "${APPS_DIR}" "${CACHE_DIR}" "${WIZARDS_DIR}" "${THEMES_DIR}/builtin" "${THEMES_DIR}/custom"
+    mkdir -p /var/lib/clovermarket
+}
+
+parse_yaml() {
+    # Lightweight YAML parser for cloverapp.yml files
+    # Usage: parse_yaml file.yml prefix
+    local file="$1"
+    local prefix="${2:-}"
+    python3 -c "
+import yaml, sys, json
+with open('$file') as f:
+    data = yaml.safe_load(f)
+if data:
+    print(json.dumps(data, default=str))
+" 2>/dev/null
+}
+
+get_app_field() {
+    local manifest="$1"
+    local field="$2"
+    python3 -c "
+import yaml, sys
+with open('$manifest') as f:
+    data = yaml.safe_load(f)
+val = data
+for key in '$field'.split('.'):
+    if isinstance(val, dict):
+        val = val.get(key, '')
+    else:
+        val = ''
+        break
+print(val if val else '')
+" 2>/dev/null
+}
+
+is_installed() {
+    local app_id="$1"
+    [[ -d "${APPS_DIR}/${app_id}" ]] && [[ -f "${APPS_DIR}/${app_id}/cloverapp.yml" ]]
+}
+
+is_running() {
+    local app_id="$1"
+    local compose="${APPS_DIR}/${app_id}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        docker compose -f "${compose}" ps --status running 2>/dev/null | grep -q "running"
+    else
+        return 1
+    fi
+}
+
+# --- Commands ----------------------------------------------------------------
+
+cmd_browse() {
+    echo ""
+    echo -e "${BOLD}  🍀 CloverMarket — App Marketplace${NC}"
+    echo -e "${DIM}  ─────────────────────────────────────${NC}"
+    echo ""
+
+    # Check for cached registry
+    if [[ -f "${REGISTRY_CACHE}" ]]; then
+        python3 << 'PYEOF'
+import json, sys
+
+try:
+    with open("/opt/clovermarket/cache/registry.json") as f:
+        registry = json.load(f)
+except Exception:
+    print("  No cached registry. Run: clovermarket-ctl refresh")
+    sys.exit(0)
+
+apps = registry.get("apps", [])
+if not apps:
+    print("  No apps in registry.")
+    sys.exit(0)
+
+# Group by category
+cats = {}
+for app in apps:
+    cat = app.get("category", "Uncategorized")
+    cats.setdefault(cat, []).append(app)
+
+for cat, cat_apps in sorted(cats.items()):
+    print(f"  \033[1m{cat}\033[0m")
+    for a in cat_apps:
+        name = a.get("name", "Unknown")
+        app_id = a.get("id", "???")
+        desc = a.get("short_description", "")[:60]
+        price = a.get("price_display", "Free")
+        badge = "✅" if a.get("official") else "🔷"
+        print(f"    {badge} {name:<25s} {price:<15s} {desc}")
+    print()
+PYEOF
+    else
+        echo -e "  ${DIM}No cached app registry. Fetching...${NC}"
+        cmd_refresh
+        cmd_browse
+    fi
+}
+
+cmd_search() {
+    local query="${1:-}"
+    if [[ -z "${query}" ]]; then
+        err "Usage: clovermarket-ctl search <query>"
+        return 1
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Search results for: ${CYAN}${query}${NC}"
+    echo ""
+
+    if [[ -f "${REGISTRY_CACHE}" ]]; then
+        python3 -c "
+import json, sys
+query = '${query}'.lower()
+with open('${REGISTRY_CACHE}') as f:
+    registry = json.load(f)
+found = 0
+for app in registry.get('apps', []):
+    name = app.get('name', '')
+    desc = app.get('short_description', '')
+    tags = ' '.join(app.get('tags', []))
+    if query in name.lower() or query in desc.lower() or query in tags.lower():
+        app_id = app.get('id', '???')
+        price = app.get('price_display', 'Free')
+        badge = '✅' if app.get('official') else '🔷'
+        print(f'    {badge} {name:<25s} {price:<15s} {desc[:50]}')
+        found += 1
+if found == 0:
+    print(f'  No apps matching \"{query}\"')
+" 2>/dev/null
+    else
+        err "No registry cache. Run: clovermarket-ctl refresh"
+    fi
+    echo ""
+}
+
+cmd_info() {
+    local app_id="${1:-}"
+    if [[ -z "${app_id}" ]]; then
+        err "Usage: clovermarket-ctl info <app-id>"
+        return 1
+    fi
+
+    # Check if installed locally
+    if is_installed "${app_id}"; then
+        local manifest="${APPS_DIR}/${app_id}/cloverapp.yml"
+        echo ""
+        python3 -c "
+import yaml
+with open('${manifest}') as f:
+    data = yaml.safe_load(f)
+
+app = data.get('app', {})
+market = data.get('marketplace', {})
+container = data.get('container', {})
+pricing = data.get('pricing', {})
+
+print(f\"  \033[1m{app.get('name', 'Unknown')}\033[0m v{app.get('version', '?')}\")
+print(f\"  {app.get('description', '')}\")
+print()
+print(f\"  ID:        {app.get('id', '?')}\")
+print(f\"  Author:    {app.get('author', {}).get('name', '?')}\")
+print(f\"  Category:  {market.get('category', '?')}\")
+print(f\"  License:   {app.get('license', '?')}\")
+print(f\"  Image:     {container.get('image', '?')}\")
+print(f\"  Pricing:   {pricing.get('model', 'free')}\")
+print()
+" 2>/dev/null
+        if is_running "${app_id}"; then
+            echo -e "  Status:    ${GREEN}● Running${NC}"
+        else
+            echo -e "  Status:    ${RED}● Stopped${NC}"
+        fi
+        echo ""
+    else
+        # Try from registry
+        if [[ -f "${REGISTRY_CACHE}" ]]; then
+            python3 -c "
+import json
+with open('${REGISTRY_CACHE}') as f:
+    registry = json.load(f)
+for app in registry.get('apps', []):
+    if app.get('id') == '${app_id}':
+        print(f\"  \033[1m{app['name']}\033[0m\")
+        print(f\"  {app.get('short_description', '')}\")
+        print(f\"  Category:  {app.get('category', '?')}\")
+        print(f\"  Price:     {app.get('price_display', 'Free')}\")
+        print(f\"  Author:    {app.get('author', '?')}\")
+        print(f\"  Status:    Not installed\")
+        break
+else:
+    print(f'  App \"{app_id}\" not found')
+" 2>/dev/null
+        else
+            err "App not installed and no registry cache. Run: clovermarket-ctl refresh"
+        fi
+        echo ""
+    fi
+}
+
+cmd_install() {
+    local app_id="${1:-}"
+    if [[ -z "${app_id}" ]]; then
+        err "Usage: clovermarket-ctl install <app-id>"
+        return 1
+    fi
+
+    if is_installed "${app_id}"; then
+        warn "App '${app_id}' is already installed"
+        return 0
+    fi
+
+    log "Installing ${app_id}..."
+
+    # 1. Download app package from registry
+    local pkg_url="${REGISTRY_URL}/apps/${app_id}/download"
+    local pkg_file="${CACHE_DIR}/${app_id}.tar.gz"
+
+    info "Downloading ${app_id}..."
+    if ! curl -fsSL "${pkg_url}" -o "${pkg_file}" 2>/dev/null; then
+        # Fallback: check for local .cloverapp package
+        if [[ -f "${CACHE_DIR}/${app_id}.cloverapp" ]]; then
+            pkg_file="${CACHE_DIR}/${app_id}.cloverapp"
+            info "Using cached package"
+        else
+            err "Failed to download ${app_id}"
+            err "Check your network or try: clovermarket-ctl install-local <path>"
+            return 1
+        fi
+    fi
+
+    # 2. Extract to apps directory
+    info "Extracting..."
+    mkdir -p "${APPS_DIR}/${app_id}"
+    tar -xzf "${pkg_file}" -C "${APPS_DIR}/${app_id}" 2>/dev/null || {
+        err "Failed to extract package"
+        rm -rf "${APPS_DIR}/${app_id}"
+        return 1
+    }
+
+    # 3. Validate cloverapp.yml exists
+    if [[ ! -f "${APPS_DIR}/${app_id}/cloverapp.yml" ]]; then
+        err "Invalid package: missing cloverapp.yml"
+        rm -rf "${APPS_DIR}/${app_id}"
+        return 1
+    fi
+
+    # 4. Pull Docker images
+    local image
+    image=$(get_app_field "${APPS_DIR}/${app_id}/cloverapp.yml" "container.image")
+    if [[ -n "${image}" ]]; then
+        info "Pulling container image: ${image}"
+        docker pull "${image}" 2>/dev/null || warn "Could not pull ${image} — may need to build locally"
+    fi
+
+    # 5. Create Docker Compose from manifest
+    _generate_compose "${app_id}"
+
+    # 6. Start the app
+    info "Starting ${app_id}..."
+    local compose="${APPS_DIR}/${app_id}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        docker compose -f "${compose}" up -d
+    fi
+
+    # 7. Run startup wizard if defined
+    if [[ -f "${APPS_DIR}/${app_id}/wizard.yml" ]]; then
+        log "App has a startup wizard. Run: clovermarket-ctl wizard ${app_id}"
+    fi
+
+    log "✅ ${app_id} installed successfully!"
+}
+
+cmd_install_local() {
+    local pkg_path="${1:-}"
+    if [[ -z "${pkg_path}" ]] || [[ ! -f "${pkg_path}" ]]; then
+        err "Usage: clovermarket-ctl install-local <path-to-.cloverapp>"
+        return 1
+    fi
+
+    # Extract app ID from package
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    tar -xzf "${pkg_path}" -C "${tmp_dir}" 2>/dev/null || {
+        err "Invalid package format"
+        rm -rf "${tmp_dir}"
+        return 1
+    }
+
+    if [[ ! -f "${tmp_dir}/cloverapp.yml" ]]; then
+        err "Invalid package: missing cloverapp.yml"
+        rm -rf "${tmp_dir}"
+        return 1
+    fi
+
+    local app_id
+    app_id=$(get_app_field "${tmp_dir}/cloverapp.yml" "app.id")
+    if [[ -z "${app_id}" ]]; then
+        err "Package has no app.id in cloverapp.yml"
+        rm -rf "${tmp_dir}"
+        return 1
+    fi
+
+    log "Installing local package: ${app_id}"
+    mkdir -p "${APPS_DIR}/${app_id}"
+    cp -a "${tmp_dir}/." "${APPS_DIR}/${app_id}/"
+    rm -rf "${tmp_dir}"
+
+    _generate_compose "${app_id}"
+
+    local compose="${APPS_DIR}/${app_id}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        info "Starting ${app_id}..."
+        docker compose -f "${compose}" up -d
+    fi
+
+    log "✅ ${app_id} installed from local package!"
+}
+
+cmd_remove() {
+    local app_id="${1:-}"
+    if [[ -z "${app_id}" ]]; then
+        err "Usage: clovermarket-ctl remove <app-id>"
+        return 1
+    fi
+
+    if ! is_installed "${app_id}"; then
+        err "App '${app_id}' is not installed"
+        return 1
+    fi
+
+    log "Removing ${app_id}..."
+
+    # Stop containers
+    local compose="${APPS_DIR}/${app_id}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        docker compose -f "${compose}" down --remove-orphans 2>/dev/null || true
+    fi
+
+    # Remove app directory
+    rm -rf "${APPS_DIR}/${app_id}"
+
+    log "✅ ${app_id} removed"
+}
+
+cmd_update() {
+    local app_id="${1:-}"
+
+    if [[ -n "${app_id}" ]]; then
+        # Update single app
+        if ! is_installed "${app_id}"; then
+            err "App '${app_id}' is not installed"
+            return 1
+        fi
+        log "Updating ${app_id}..."
+        _update_app "${app_id}"
+    else
+        # Update all installed apps
+        log "Checking for updates..."
+        for app_dir in "${APPS_DIR}"/*/; do
+            [[ -d "${app_dir}" ]] || continue
+            local aid
+            aid=$(basename "${app_dir}")
+            _update_app "${aid}"
+        done
+    fi
+}
+
+_update_app() {
+    local app_id="$1"
+    local manifest="${APPS_DIR}/${app_id}/cloverapp.yml"
+    local current_ver
+    current_ver=$(get_app_field "${manifest}" "app.version")
+
+    # Check registry for newer version
+    if [[ -f "${REGISTRY_CACHE}" ]]; then
+        local latest_ver
+        latest_ver=$(python3 -c "
+import json
+with open('${REGISTRY_CACHE}') as f:
+    reg = json.load(f)
+for a in reg.get('apps', []):
+    if a.get('id') == '${app_id}':
+        print(a.get('version', ''))
+        break
+" 2>/dev/null)
+
+        if [[ -n "${latest_ver}" ]] && [[ "${latest_ver}" != "${current_ver}" ]]; then
+            info "${app_id}: ${current_ver} → ${latest_ver}"
+            # Re-download and install
+            cmd_remove "${app_id}" 2>/dev/null
+            cmd_install "${app_id}"
+        else
+            info "${app_id}: up to date (${current_ver})"
+        fi
+    fi
+}
+
+cmd_start() {
+    local app_id="${1:-}"
+    if [[ -z "${app_id}" ]]; then
+        err "Usage: clovermarket-ctl start <app-id>"
+        return 1
+    fi
+    local compose="${APPS_DIR}/${app_id}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        log "Starting ${app_id}..."
+        docker compose -f "${compose}" up -d
+    else
+        err "No compose file for ${app_id}"
+    fi
+}
+
+cmd_stop() {
+    local app_id="${1:-}"
+    if [[ -z "${app_id}" ]]; then
+        err "Usage: clovermarket-ctl stop <app-id>"
+        return 1
+    fi
+    local compose="${APPS_DIR}/${app_id}/docker-compose.yml"
+    if [[ -f "${compose}" ]]; then
+        log "Stopping ${app_id}..."
+        docker compose -f "${compose}" down
+    else
+        err "No compose file for ${app_id}"
+    fi
+}
+
+cmd_status() {
+    echo ""
+    echo -e "  ${BOLD}CloverMarket — Installed Apps${NC}"
+    echo -e "  ${DIM}──────────────────────────────────────────${NC}"
+    echo ""
+    printf "  ${BOLD}%-20s %-12s %-10s %-15s${NC}\n" "APP" "VERSION" "STATUS" "PRICING"
+    printf "  ${DIM}%-20s %-12s %-10s %-15s${NC}\n" "───" "───────" "──────" "───────"
+
+    local count=0
+    for app_dir in "${APPS_DIR}"/*/; do
+        [[ -d "${app_dir}" ]] || continue
+        local app_id
+        app_id=$(basename "${app_dir}")
+        local manifest="${app_dir}/cloverapp.yml"
+
+        if [[ -f "${manifest}" ]]; then
+            local name version pricing
+            name=$(get_app_field "${manifest}" "app.name")
+            version=$(get_app_field "${manifest}" "app.version")
+            pricing=$(get_app_field "${manifest}" "pricing.model")
+
+            if is_running "${app_id}"; then
+                status="${GREEN}● running${NC}"
+            else
+                status="${RED}● stopped${NC}"
+            fi
+
+            printf "  %-20s %-12s ${status}  %-15s\n" "${name:-${app_id}}" "${version:-?}" "${pricing:-free}"
+            ((count++))
+        fi
+    done
+
+    if [[ ${count} -eq 0 ]]; then
+        echo -e "  ${DIM}No apps installed. Run: clovermarket-ctl browse${NC}"
+    fi
+    echo ""
+}
+
+cmd_refresh() {
+    info "Refreshing app registry from ${REGISTRY_URL}..."
+    ensure_dirs
+    if curl -fsSL "${REGISTRY_URL}/registry" -o "${REGISTRY_CACHE}" 2>/dev/null; then
+        local count
+        count=$(python3 -c "
+import json
+with open('${REGISTRY_CACHE}') as f:
+    print(len(json.load(f).get('apps', [])))
+" 2>/dev/null)
+        log "Registry updated: ${count:-0} apps available"
+    else
+        warn "Could not reach registry at ${REGISTRY_URL}"
+        warn "Marketplace is available offline with locally installed apps"
+        # Create empty registry if none exists
+        if [[ ! -f "${REGISTRY_CACHE}" ]]; then
+            echo '{"apps":[],"updated":"offline"}' > "${REGISTRY_CACHE}"
+        fi
+    fi
+}
+
+cmd_wizard() {
+    local app_id="${1:-}"
+    if [[ -z "${app_id}" ]]; then
+        err "Usage: clovermarket-ctl wizard <app-id>"
+        return 1
+    fi
+
+    local wizard_file="${APPS_DIR}/${app_id}/wizard.yml"
+    if [[ ! -f "${wizard_file}" ]]; then
+        err "No startup wizard found for ${app_id}"
+        return 1
+    fi
+
+    log "Launching startup wizard for ${app_id}..."
+    log "Open your browser to: http://$(hostname -I | awk '{print $1}'):8090/wizard/${app_id}"
+
+    # The marketplace server handles wizard rendering
+    # If the server isn't running, use the CLI fallback
+    if ! curl -s "http://localhost:8090/health" >/dev/null 2>&1; then
+        warn "Marketplace server not running. Starting CLI wizard..."
+        _cli_wizard "${app_id}" "${wizard_file}"
+    fi
+}
+
+_cli_wizard() {
+    local app_id="$1"
+    local wizard_file="$2"
+
+    python3 << PYEOF
+import yaml, json, os, sys
+
+with open("${wizard_file}") as f:
+    wizard = yaml.safe_load(f)
+
+config = {}
+steps = wizard.get("steps", [])
+print()
+print("  🧙 Startup Wizard: ${app_id}")
+print("  " + "─" * 40)
+print()
+
+for i, step in enumerate(steps):
+    title = step.get("title", f"Step {i+1}")
+    desc = step.get("description", "")
+    print(f"  Step {i+1}/{len(steps)}: {title}")
+    if desc:
+        print(f"  {desc}")
+    print()
+
+    for field in step.get("fields", []):
+        fid = field.get("id", "")
+        label = field.get("label", fid)
+        ftype = field.get("type", "text")
+        default = field.get("default", "")
+        options = field.get("options", [])
+
+        if ftype == "select" and options:
+            print(f"    {label}:")
+            for j, opt in enumerate(options):
+                if isinstance(opt, dict):
+                    print(f"      [{j+1}] {opt.get('label', opt.get('value', ''))}")
+                else:
+                    print(f"      [{j+1}] {opt}")
+            choice = input(f"    Choose [{default or 1}]: ").strip()
+            if not choice:
+                choice = str(default or 1)
+            try:
+                idx = int(choice) - 1
+                if isinstance(options[idx], dict):
+                    config[fid] = options[idx].get("value", options[idx].get("label", ""))
+                else:
+                    config[fid] = options[idx]
+            except (ValueError, IndexError):
+                config[fid] = choice
+        elif ftype == "checkbox" or ftype == "checklist":
+            print(f"    {label}:")
+            items = field.get("items", options)
+            for j, item in enumerate(items):
+                if isinstance(item, dict):
+                    print(f"      [{j+1}] {item.get('label', item.get('value', ''))}")
+                else:
+                    print(f"      [{j+1}] {item}")
+            choice = input(f"    Select (comma-separated) [{default or ''}]: ").strip()
+            if not choice and default:
+                choice = str(default)
+            selected = [s.strip() for s in choice.split(",") if s.strip()]
+            config[fid] = selected
+        else:
+            val = input(f"    {label} [{default}]: ").strip()
+            config[fid] = val if val else default
+        print()
+
+# Save wizard config
+config_path = f"/opt/clovermarket/apps/${app_id}/wizard-config.json"
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+
+print(f"  ✅ Wizard complete! Config saved to {config_path}")
+print()
+PYEOF
+}
+
+# --- Theme Commands ----------------------------------------------------------
+
+cmd_theme_list() {
+    echo ""
+    echo -e "  ${BOLD}Installed Themes${NC}"
+    echo -e "  ${DIM}──────────────────────────────${NC}"
+    echo ""
+
+    local active_theme
+    active_theme=$(cat /etc/myclover/themes/active 2>/dev/null || echo "clover-classic")
+
+    for theme_dir in "${THEMES_DIR}"/builtin/*.clover-theme "${THEMES_DIR}"/custom/*.clover-theme; do
+        [[ -f "${theme_dir}" ]] || continue
+        local tname
+        tname=$(python3 -c "
+import json
+with open('${theme_dir}') as f:
+    t = json.load(f)
+print(t.get('name', '$(basename "${theme_dir}" .clover-theme)'))
+" 2>/dev/null)
+
+        local tid
+        tid=$(basename "${theme_dir}" .clover-theme)
+
+        if [[ "${tid}" == "${active_theme}" ]]; then
+            echo -e "  ${GREEN}● ${tname} (active)${NC}"
+        else
+            echo -e "  ${DIM}○ ${tname}${NC}"
+        fi
+    done
+    echo ""
+}
+
+cmd_theme_apply() {
+    local theme_id="${1:-}"
+    if [[ -z "${theme_id}" ]]; then
+        err "Usage: clovermarket-ctl theme apply <theme-id>"
+        return 1
+    fi
+
+    local theme_file
+    if [[ -f "${THEMES_DIR}/builtin/${theme_id}.clover-theme" ]]; then
+        theme_file="${THEMES_DIR}/builtin/${theme_id}.clover-theme"
+    elif [[ -f "${THEMES_DIR}/custom/${theme_id}.clover-theme" ]]; then
+        theme_file="${THEMES_DIR}/custom/${theme_id}.clover-theme"
+    else
+        err "Theme '${theme_id}' not found"
+        return 1
+    fi
+
+    # Generate CSS from theme file
+    python3 -c "
+import json, os
+
+with open('${theme_file}') as f:
+    theme = json.load(f)
+
+tokens = theme.get('tokens', {})
+css_vars = []
+
+def flatten(d, prefix=''):
+    for k, v in d.items():
+        key = f'{prefix}-{k}' if prefix else k
+        if isinstance(v, dict):
+            flatten(v, key)
+        else:
+            css_vars.append(f'  --clover-{key}: {v};')
+
+flatten(tokens)
+
+css = ':root {\n' + '\n'.join(css_vars) + '\n}\n'
+
+# Write the active theme CSS
+os.makedirs('/etc/myclover/themes', exist_ok=True)
+with open('/etc/myclover/themes/active.css', 'w') as f:
+    f.write(css)
+with open('/etc/myclover/themes/active', 'w') as f:
+    f.write('${theme_id}')
+
+print(f'Theme applied: ${theme_id} ({len(css_vars)} tokens)')
+" 2>/dev/null
+
+    log "Theme '${theme_id}' applied. Restart apps to see changes."
+}
+
+cmd_theme_import() {
+    local theme_path="${1:-}"
+    if [[ -z "${theme_path}" ]] || [[ ! -f "${theme_path}" ]]; then
+        err "Usage: clovermarket-ctl theme import <path-to-.clover-theme>"
+        return 1
+    fi
+
+    local fname
+    fname=$(basename "${theme_path}")
+    cp "${theme_path}" "${THEMES_DIR}/custom/${fname}"
+    log "Theme imported: ${fname}"
+}
+
+# --- Docker Compose generator ------------------------------------------------
+
+_generate_compose() {
+    local app_id="$1"
+    local manifest="${APPS_DIR}/${app_id}/cloverapp.yml"
+    local compose_file="${APPS_DIR}/${app_id}/docker-compose.yml"
+
+    python3 << PYEOF
+import yaml, json, os
+
+with open("${manifest}") as f:
+    data = yaml.safe_load(f)
+
+app = data.get("app", {})
+container = data.get("container", {})
+networking = data.get("networking", {})
+data_cfg = data.get("data", {})
+integrations = data.get("integrations", {})
+theme_cfg = data.get("theme", {})
+
+app_id = app.get("id", "${app_id}")
+image = container.get("image", "")
+ports = container.get("ports", [])
+env = container.get("environment", {})
+volumes = data_cfg.get("volumes", [])
+resources = container.get("resources", {})
+
+# Build docker-compose.yml
+svc = {
+    "image": image,
+    "container_name": f"clovermarket-{app_id}",
+    "restart": container.get("restart", "unless-stopped"),
+    "networks": ["cloverstack"],
+}
+
+# Ports
+if ports:
+    svc["ports"] = [f"{p.get('host', p.get('container'))}:{p['container']}" 
+                     if isinstance(p, dict) else str(p) for p in ports]
+
+# Environment
+env_list = []
+for k, v in env.items():
+    env_list.append(f"{k}={v}")
+# Inject theme CSS path
+if theme_cfg.get("enabled", True):
+    env_list.append("CLOVER_THEME_CSS=/etc/myclover/themes/active.css")
+# Inject CloverStack integration endpoints
+if integrations.get("chappie", {}).get("enabled"):
+    env_list.append("CHAPPIE_URL=http://chappie:11434")
+if integrations.get("cloverbase", {}).get("enabled"):
+    env_list.append("CLOVERBASE_URL=http://cloverbase:5432")
+if integrations.get("vault", {}).get("enabled"):
+    env_list.append("VAULT_SSO_URL=http://myclover-vault:8222")
+if env_list:
+    svc["environment"] = env_list
+
+# Volumes
+vol_list = []
+for v in volumes:
+    if isinstance(v, dict):
+        vol_list.append(f"{v.get('host', f'/var/lib/clovermarket/{app_id}/{v.get(\"name\", \"data\")}')}"
+                       f":{v.get('mount', '/data')}")
+    else:
+        vol_list.append(str(v))
+# Always mount theme CSS
+vol_list.append("/etc/myclover/themes:/etc/myclover/themes:ro")
+if vol_list:
+    svc["volumes"] = vol_list
+
+# Resource limits
+if resources:
+    deploy = {"resources": {"limits": {}}}
+    if resources.get("memory"):
+        deploy["resources"]["limits"]["memory"] = resources["memory"]
+    if resources.get("cpus"):
+        deploy["resources"]["limits"]["cpus"] = str(resources["cpus"])
+    svc["deploy"] = deploy
+
+# Traefik labels for auto-routing
+subdomain = networking.get("subdomain", app_id)
+if networking.get("traefik", {}).get("enabled", True):
+    svc["labels"] = [
+        "traefik.enable=true",
+        f"traefik.http.routers.{app_id}.rule=Host(\`{subdomain}.local\`)",
+        f"traefik.http.routers.{app_id}.entrypoints=web",
+    ]
+
+compose = {
+    "services": {app_id: svc},
+    "networks": {
+        "cloverstack": {"external": True}
+    }
+}
+
+with open("${compose_file}", "w") as f:
+    yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
+
+print(f"Generated docker-compose.yml for {app_id}")
+PYEOF
+}
+
+# --- Wallet Commands ---------------------------------------------------------
+
+cmd_wallet() {
+    if [[ ! -f "${WALLET_FILE}" ]]; then
+        echo '{"balance":0,"transactions":[]}' > "${WALLET_FILE}"
+    fi
+
+    python3 -c "
+import json
+with open('${WALLET_FILE}') as f:
+    w = json.load(f)
+bal = w.get('balance', 0)
+txns = w.get('transactions', [])
+print()
+print(f'  💰 CloverCoin Wallet')
+print(f'  ────────────────────')
+print(f'  Balance: {bal:,} CC')
+print(f'  Transactions: {len(txns)}')
+if txns:
+    print()
+    for t in txns[-5:]:
+        amt = t.get('amount', 0)
+        desc = t.get('description', '')
+        dt = t.get('date', '')
+        sign = '+' if amt > 0 else ''
+        print(f'    {dt}  {sign}{amt:,} CC  {desc}')
+print()
+" 2>/dev/null
+}
+
+# --- Usage -------------------------------------------------------------------
+
+usage() {
+    cat <<EOF
+
+  🍀 CloverMarket CLI v${VERSION}
+
+  Usage: clovermarket-ctl <command> [args]
+
+  App Commands:
+    browse                  Browse available apps
+    search <query>          Search for apps
+    info <app-id>           Show app details
+    install <app-id>        Install an app from the marketplace
+    install-local <path>    Install from a local .cloverapp package
+    remove <app-id>         Uninstall an app
+    update [app-id]         Update app(s) to latest version
+    start <app-id>          Start an installed app
+    stop <app-id>           Stop a running app
+    status                  Show all installed apps and status
+    wizard <app-id>         Run an app's startup wizard
+    refresh                 Refresh the app registry
+
+  Theme Commands:
+    theme list              List installed themes
+    theme apply <id>        Apply a theme
+    theme import <path>     Import a .clover-theme file
+
+  Wallet:
+    wallet                  Show CloverCoin balance
+
+  General:
+    help                    Show this help
+    version                 Show version
+
+EOF
+}
+
+# --- Main Dispatch -----------------------------------------------------------
+
+ensure_dirs
+
+COMMAND="${1:-}"
+ARG="${2:-}"
+
+case "${COMMAND}" in
+    browse)         cmd_browse ;;
+    search)         cmd_search "${ARG}" ;;
+    info)           cmd_info "${ARG}" ;;
+    install)        cmd_install "${ARG}" ;;
+    install-local)  cmd_install_local "${ARG}" ;;
+    remove)         cmd_remove "${ARG}" ;;
+    update)         cmd_update "${ARG}" ;;
+    start)          cmd_start "${ARG}" ;;
+    stop)           cmd_stop "${ARG}" ;;
+    status)         cmd_status ;;
+    wizard)         cmd_wizard "${ARG}" ;;
+    refresh)        cmd_refresh ;;
+    theme)
+        SUBCMD="${2:-}"
+        SUBARG="${3:-}"
+        case "${SUBCMD}" in
+            list)   cmd_theme_list ;;
+            apply)  cmd_theme_apply "${SUBARG}" ;;
+            import) cmd_theme_import "${SUBARG}" ;;
+            *)      err "Unknown theme command: ${SUBCMD}"; usage ;;
+        esac
+        ;;
+    wallet)         cmd_wallet ;;
+    version)        echo "clovermarket-ctl v${VERSION}" ;;
+    help|--help|-h) usage ;;
+    *)              usage ;;
+esac

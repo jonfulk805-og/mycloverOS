@@ -27,11 +27,19 @@ Commands:
   list                List all available modules
   info <module>       Show module info
 
+Marketplace:
+  market browse       Browse CloverMarket apps
+  market install <id> Install a CloverApp
+  market status       Show installed CloverApps
+  market wizard <id>  Run app startup wizard
+  market theme <cmd>  Manage themes (list|apply|import)
+
 Modules:
   netmon              Network monitoring (Zabbix)
   sentrylog           Log management (Graylog + Wazuh)
   myclover-vault      Password manager (Vaultwarden)
   chappie             AI assistant (Ollama)
+  clovermarket        App marketplace (CloverMarket)
   clovermedia         Smart TV + streaming + DJ
   cloversign          Digital signage
   cloverguard         Web proxy + content filter
@@ -147,6 +155,7 @@ cmd_list() {
     echo "  cloverdrone       UAV control"
     echo "  clovermesh        Distributed mesh"
     echo "  clovermesh-radio  LoRa mesh comms"
+    echo "  clovermarket      App marketplace (CloverMarket)"
     echo "  streamserver      Live streaming platform"
     echo ""
 }
@@ -166,5 +175,10 @@ case "${COMMAND}" in
     logs)       [[ -n "${MODULE}" ]] && cmd_logs "${MODULE}" || usage ;;
     list)       cmd_list ;;
     info)       [[ -n "${MODULE}" ]] && log "Info for ${MODULE} (TODO)" || usage ;;
+    market)
+        # Delegate to clovermarket-ctl
+        shift
+        exec clovermarket-ctl "$@"
+        ;;
     *)          usage ;;
 esac

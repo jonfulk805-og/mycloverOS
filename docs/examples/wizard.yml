@@ -1,0 +1,135 @@
+# =============================================================================
+# wizard.yml — CloverApp Startup Wizard
+# =============================================================================
+# Defines the interactive setup wizard that runs after installing an app.
+# Users step through each section to configure the app for their needs.
+# =============================================================================
+
+app_name: My Awesome App
+app_id: my-awesome-app
+
+steps:
+  - title: Welcome & Basics
+    description: Set up the fundamental options for your app.
+    icon: 👋
+    fields:
+      - id: app_title
+        label: App Title
+        type: text
+        default: My Awesome App
+        placeholder: What should this app be called?
+        required: true
+
+      - id: language
+        label: Language
+        type: select
+        default: en
+        options:
+          - { value: en, label: English }
+          - { value: es, label: Español }
+          - { value: fr, label: Français }
+          - { value: de, label: Deutsch }
+          - { value: pt, label: Português }
+
+      - id: timezone
+        label: Timezone
+        type: select
+        default: UTC
+        options:
+          - { value: UTC, label: UTC }
+          - { value: America/Los_Angeles, label: Pacific Time }
+          - { value: America/New_York, label: Eastern Time }
+          - { value: Europe/London, label: London }
+          - { value: Asia/Tokyo, label: Tokyo }
+
+  - title: Choose Your Layout
+    description: Pick a layout that works best for your workflow.
+    icon: 📐
+    fields:
+      - id: layout
+        label: Interface Layout
+        type: layout_picker
+        default: dashboard
+        layouts:
+          - { value: dashboard, label: Dashboard, preview: "📊" }
+          - { value: kanban, label: Kanban Board, preview: "📋" }
+          - { value: list, label: Simple List, preview: "📝" }
+          - { value: calendar, label: Calendar View, preview: "📅" }
+          - { value: timeline, label: Timeline, preview: "📈" }
+          - { value: gallery, label: Gallery Grid, preview: "🖼️" }
+
+  - title: Appearance
+    description: Customize the look and feel.
+    icon: 🎨
+    fields:
+      - id: theme
+        label: Theme
+        type: theme_picker
+        default: clover-classic
+
+      - id: accent_color
+        label: Custom Accent Color
+        type: color
+        default: "#22c55e"
+
+      - id: font_size
+        label: Font Size
+        type: select
+        default: medium
+        options:
+          - { value: small, label: Small (14px) }
+          - { value: medium, label: Medium (16px) }
+          - { value: large, label: Large (18px) }
+
+  - title: Features & Integrations
+    description: Enable the features you need.
+    icon: ⚡
+    fields:
+      - id: features
+        label: Enable Features
+        type: checklist
+        items:
+          - { value: ai_assist, label: "🤖 AI Assistant (Chappie)" }
+          - { value: notifications, label: "🔔 Push Notifications" }
+          - { value: api, label: "🔌 REST API" }
+          - { value: backup, label: "💾 Auto-Backup" }
+          - { value: sso, label: "🔐 Single Sign-On (Vault)" }
+          - { value: export, label: "📤 Data Export" }
+
+      - id: max_users
+        label: Maximum Users
+        type: number
+        default: 5
+        min: 1
+        max: 100
+
+  - title: Database
+    description: Configure data storage.
+    icon: 🗄️
+    fields:
+      - id: database_type
+        label: Database Engine
+        type: select
+        default: sqlite
+        options:
+          - { value: sqlite, label: SQLite (Simple, built-in) }
+          - { value: postgres, label: PostgreSQL (via CloverBase) }
+          - { value: mysql, label: MySQL }
+
+      - id: database_name
+        label: Database Name
+        type: text
+        default: my_awesome_app
+        placeholder: lowercase_no_spaces
+
+  - title: Review & Launch
+    description: Everything looks good? Let's start your app!
+    icon: 🚀
+    fields:
+      - id: auto_start
+        label: Start app automatically on boot?
+        type: select
+        default: "yes"
+        options:
+          - { value: "yes", label: "Yes — start on boot" }
+          - { value: "no", label: "No — manual start only" }

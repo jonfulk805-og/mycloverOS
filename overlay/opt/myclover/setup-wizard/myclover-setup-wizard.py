@@ -407,6 +407,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
           <input type="checkbox" name="module" value="traefik">
           <span>Traefik Proxy</span>
         </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="module" value="clovermarket" checked>
+          <span>🍀 CloverMarket</span>
+        </label>
       </div>
     </div>
 
