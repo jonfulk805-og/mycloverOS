@@ -15,7 +15,7 @@ import sys
 import socket
 import html
 import urllib.parse
-import crypt
+
 import time
 
 PORT = 8080
@@ -697,7 +697,8 @@ def main():
     print(f"  ║     🍀 mycloverOS Setup Wizard              ║", flush=True)
     print(f"  ║                                              ║", flush=True)
     print(f"  ║  Open a browser and navigate to:             ║", flush=True)
-    print(f"  ║  → http://{ip}:{PORT:<25s}    ║", flush=True)
+    url = f"http://{ip}:{PORT}"
+    print(f"  ║  → {url:<35s}  ║", flush=True)
     print(f"  ║                                              ║", flush=True)
     print(f"  ╚══════════════════════════════════════════════╝", flush=True)
     print(f"", flush=True)
