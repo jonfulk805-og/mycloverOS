@@ -10,6 +10,9 @@ dbus
 udev
 init
 
+# --- Kernel ---
+linux-image-amd64
+
 # --- Shell & utilities ---
 bash
 bash-completion
