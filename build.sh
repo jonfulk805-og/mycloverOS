@@ -71,12 +71,11 @@ LB_ARGS=(
     --parent-distribution "bookworm"
     --parent-mirror-bootstrap "http://deb.debian.org/debian"
     --parent-mirror-chroot "http://deb.debian.org/debian"
-    --parent-mirror-chroot-security "http://security.debian.org/debian-security"
     --archive-areas "main"
     --architectures "${BASE_ARCH}"
     --mirror-bootstrap "${BASE_MIRROR}"
     --mirror-chroot "${BASE_MIRROR}"
-    --mirror-chroot-security "${BASE_SECURITY_MIRROR}"
+    --security false
     --binary-images iso-hybrid
     --iso-application "${DISTRO_NAME}"
     --iso-volume "${ISO_LABEL}"
@@ -94,7 +93,7 @@ LB_ARGS=(
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
 # removed in 5.x+ (Debian Bookworm / Ubuntu 24.04+)
 if lb config --help 2>&1 | grep -q -- '--updates'; then
-    LB_ARGS+=(--security true --updates true --backports false)
+    LB_ARGS+=(--updates true --backports false)
 fi
 
 # Firmware flags changed across versions
