@@ -84,7 +84,8 @@ LB_ARGS=(
     --apt-recommends false
     --cache true
     --keyring-packages debian-archive-keyring
-    --linux-packages "none"
+    --linux-packages "linux-image"
+    --linux-flavours "amd64"
     --apt-indices false
     --initramfs live-boot
     --initsystem systemd
