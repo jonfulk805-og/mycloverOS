@@ -22,8 +22,11 @@ sudo apt-get install -y \
     grub-pc-bin \
     grub-efi-amd64-bin \
     mtools \
-    dosfstools
+    dosfstools \
+    debian-archive-keyring
 ```
+
+> **Ubuntu hosts:** The `debian-archive-keyring` package is required so debootstrap can verify Debian package signatures. Without it you'll get `keyring file not available` warnings.
 
 ## Build an ISO
 
