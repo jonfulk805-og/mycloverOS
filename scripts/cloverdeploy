@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cloverdeploy -- Container & VM Deployment CLI
+# Subcommand of cloverstack-ctl: `cloverstack-ctl deploy <command>`
+# =============================================================================
+set -euo pipefail
+
+DEPLOY_ROOT="/opt/cloverstack/cloverdeploy"
+DEPLOY_CONFIG="/etc/myclover/clovernas.d/cloverdeploy.conf"
+CATALOG_FILE="${DEPLOY_ROOT}/catalog/manifest.json"
+VM_DIR="/var/lib/cloverdeploy/vms"
+ISO_DIR="/var/lib/cloverdeploy/isos"
+
+[[ -f "${DEPLOY_CONFIG}" ]] && source "${DEPLOY_CONFIG}"
+
+log() { echo "[cloverdeploy] $*"; }
+err() { echo "[cloverdeploy] ERROR: $*" >&2; }
+
+usage() {
+    cat <<EOF
+CloverDeploy — Container & VM Orchestration
+Usage: cloverstack-ctl deploy <command> [options]
+
+Container Management:
+  install <app-id> [--ha]        Install app from catalog
+  remove <app-id>                Remove installed app
+  start <app-id>                 Start app containers
+  stop <app-id>                  Stop app containers
+  restart <app-id>               Restart app containers
+  update <app-id>                Pull latest image and restart
+  logs <app-id>                  Show app logs
+  catalog                        Browse available apps
+  search <query>                 Search app catalog
+  installed                      List installed apps
+
+Virtual Machine Management:
+  vm create <name> [options]     Create a new VM
+  vm list                        List all VMs
+  vm start <name>                Start a VM
+  vm stop <name>                 Stop a VM (graceful)
+  vm kill <name>                 Force-stop a VM
+  vm delete <name>               Delete a VM and its disk
+  vm console <name>              Open noVNC console in browser
+  vm ssh <name>                  SSH into VM
+  vm snapshot <name> [snap]      Snapshot a VM
+  vm migrate <name> <node>       Live-migrate VM to another node
+
+  vm templates                   List OS templates
+  vm download <template>         Download OS ISO/template
+
+GPU / Device Passthrough:
+  gpu list                       List available GPUs
+  gpu attach <vm> <gpu-id>       Attach GPU to VM
+  gpu detach <vm>                Detach GPU from VM
+
+EOF
+}
+
+# =============================================================================
+# CONTAINER COMMANDS
+# =============================================================================
+
+cmd_catalog() {
+    if [[ ! -f "${CATALOG_FILE}" ]]; then
+        err "App catalog not found at ${CATALOG_FILE}"
+        exit 1
+    fi
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════╗"
+    echo "║        🍀 CloverDeploy App Catalog               ║"
+    echo "╚══════════════════════════════════════════════════╝"
+    echo ""
+
+    # Parse JSON catalog with python3 (always available on Debian)
+    python3 -c "
+import json, sys
+with open('${CATALOG_FILE}') as f:
+    data = json.load(f)
+for cat in data['categories']:
+    print(f'  📂 {cat[\"name\"]}')
+    for app in cat['apps']:
+        ha = ' [HA]' if app.get('ha') else ''
+        print(f'     {app[\"id\"]:20s} {app[\"name\"]:20s} {app[\"desc\"]}{ha}')
+    print()
+"
+}
+
+cmd_install() {
+    local app_id="$1"
+    local ha=false
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ha) ha=true; shift ;;
+            *)    shift ;;
+        esac
+    done
+
+    # Lookup app in catalog
+    local app_info
+    app_info=$(python3 -c "
+import json, sys
+with open('${CATALOG_FILE}') as f:
+    data = json.load(f)
+for cat in data['categories']:
+    for app in cat['apps']:
+        if app['id'] == '${app_id}':
+            print(json.dumps(app))
+            sys.exit(0)
+print('NOT_FOUND')
+")
+
+    if [[ "${app_info}" == "NOT_FOUND" ]]; then
+        err "App '${app_id}' not found in catalog. Run: cloverstack-ctl deploy catalog"
+        exit 1
+    fi
+
+    local image name ports
+    image=$(echo "${app_info}" | python3 -c "import json,sys; print(json.load(sys.stdin)['image'])")
+    name=$(echo "${app_info}" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
+
+    log "Installing ${name} (${app_id})..."
+    log "Pulling image: ${image}"
+    docker pull "${image}"
+
+    # Generate compose file
+    local compose_dir="${DEPLOY_ROOT}/compose/${app_id}"
+    mkdir -p "${compose_dir}"
+
+    cat > "${compose_dir}/docker-compose.yml" <<COMPOSE
+version: '3.8'
+services:
+  ${app_id}:
+    image: ${image}
+    container_name: clover-${app_id}
+    restart: unless-stopped
+    volumes:
+      - ${app_id}-data:/data
+    labels:
+      - "clover.app=${app_id}"
+      - "clover.managed=true"
+      - "clover.ha=${ha}"
+
+volumes:
+  ${app_id}-data:
+COMPOSE
+
+    docker compose -f "${compose_dir}/docker-compose.yml" up -d
+
+    log "${name} installed and running!"
+    log "Manage with: cloverstack-ctl deploy [start|stop|logs|remove] ${app_id}"
+}
+
+cmd_installed() {
+    echo ""
+    echo "=== Installed CloverDeploy Apps ==="
+    echo ""
+    printf "%-20s %-30s %-10s\n" "APP ID" "IMAGE" "STATUS"
+    printf "%-20s %-30s %-10s\n" "------" "-----" "------"
+
+    for compose_dir in "${DEPLOY_ROOT}/compose/"*/; do
+        [[ -d "${compose_dir}" ]] || continue
+        local app_id
+        app_id=$(basename "${compose_dir}")
+        local status="stopped"
+        if docker ps --filter "label=clover.app=${app_id}" --format "{{.Status}}" 2>/dev/null | grep -q "Up"; then
+            status="running"
+        fi
+        local image
+        image=$(grep "image:" "${compose_dir}/docker-compose.yml" 2>/dev/null | head -1 | awk '{print $2}')
+        printf "%-20s %-30s %-10s\n" "${app_id}" "${image:-unknown}" "${status}"
+    done
+    echo ""
+}
+
+cmd_remove() {
+    local app_id="$1"
+    local compose_dir="${DEPLOY_ROOT}/compose/${app_id}"
+
+    if [[ ! -d "${compose_dir}" ]]; then
+        err "App '${app_id}' is not installed"
+        exit 1
+    fi
+
+    log "Removing ${app_id}..."
+    docker compose -f "${compose_dir}/docker-compose.yml" down -v 2>/dev/null || true
+    rm -rf "${compose_dir}"
+    log "${app_id} removed"
+}
+
+# =============================================================================
+# VM COMMANDS
+# =============================================================================
+
+cmd_vm_create() {
+    local name="$1"; shift
+    local ram="${VM_DEFAULT_RAM:-2048}"
+    local vcpus="${VM_DEFAULT_VCPUS:-2}"
+    local disk="${VM_DEFAULT_DISK:-20}"
+    local iso=""
+    local os_variant="debian12"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ram)     ram="$2"; shift 2 ;;
+            --vcpus)   vcpus="$2"; shift 2 ;;
+            --disk)    disk="$2"; shift 2 ;;
+            --iso)     iso="$2"; shift 2 ;;
+            --os)      os_variant="$2"; shift 2 ;;
+            *)         shift ;;
+        esac
+    done
+
+    log "Creating VM '${name}': ${vcpus} vCPUs, ${ram}MB RAM, ${disk}GB disk"
+
+    local disk_path="${VM_DIR}/${name}.qcow2"
+    qemu-img create -f qcow2 "${disk_path}" "${disk}G"
+
+    local virt_args=(
+        --name "${name}"
+        --ram "${ram}"
+        --vcpus "${vcpus}"
+        --disk "path=${disk_path},format=qcow2,bus=virtio"
+        --os-variant "${os_variant}"
+        --network network=default,model=virtio
+        --graphics vnc,listen=0.0.0.0
+        --noautoconsole
+    )
+
+    if [[ -n "${iso}" ]]; then
+        virt_args+=(--cdrom "${iso}")
+    else
+        virt_args+=(--import --boot uefi)
+    fi
+
+    virt-install "${virt_args[@]}"
+
+    log "VM '${name}' created"
+    log "Console: cloverstack-ctl deploy vm console ${name}"
+}
+
+cmd_vm_list() {
+    echo ""
+    echo "=== Virtual Machines ==="
+    echo ""
+    virsh list --all 2>/dev/null || echo "  libvirtd not running. Start with: systemctl start libvirtd"
+    echo ""
+}
+
+cmd_vm_console() {
+    local name="$1"
+    local vnc_port
+    vnc_port=$(virsh vncdisplay "${name}" 2>/dev/null | sed 's/://g')
+    if [[ -n "${vnc_port}" ]]; then
+        local actual_port=$((5900 + vnc_port))
+        log "VM '${name}' VNC console on port ${actual_port}"
+        log "Access via noVNC: https://$(hostname):${NOVNC_PORT:-6080}/vnc.html?port=${actual_port}"
+    else
+        err "VM '${name}' is not running or has no VNC display"
+    fi
+}
+
+cmd_vm_migrate() {
+    local name="$1"
+    local target="$2"
+
+    log "Live-migrating VM '${name}' to node '${target}'..."
+    virsh migrate --live --persistent --undefinesource \
+        "${name}" "qemu+ssh://${target}/system" \
+        --migrateuri "tcp://${target}"
+    log "Migration complete: ${name} → ${target}"
+}
+
+cmd_vm_templates() {
+    echo ""
+    echo "=== OS Templates ==="
+    echo ""
+    echo "  debian12       Debian 12 Bookworm (cloud image)"
+    echo "  ubuntu2404     Ubuntu 24.04 LTS (cloud image)"
+    echo "  rocky9         Rocky Linux 9 (cloud image)"
+    echo "  alpine320      Alpine Linux 3.20 (cloud image)"
+    echo "  freebsd14      FreeBSD 14 (cloud image)"
+    echo "  opnsense       OPNsense (ISO)"
+    echo "  pfsense        pfSense CE (ISO)"
+    echo "  truenas-scale  TrueNAS SCALE (ISO)"
+    echo "  proxmox-ve     Proxmox VE (ISO)"
+    echo "  windows11      Windows 11 (bring your own ISO)"
+    echo ""
+    echo "Download: cloverstack-ctl deploy vm download <template>"
+    echo ""
+}
+
+# =============================================================================
+# GPU COMMANDS
+# =============================================================================
+
+cmd_gpu_list() {
+    echo ""
+    echo "=== Available GPUs ==="
+    lspci -nn | grep -iE "vga|3d|display" || echo "  No discrete GPUs found"
+    echo ""
+
+    echo "=== IOMMU Groups ==="
+    if [[ -d /sys/kernel/iommu_groups/ ]]; then
+        for g in /sys/kernel/iommu_groups/*/devices/*; do
+            [[ -e "${g}" ]] || continue
+            local group
+            group=$(echo "${g}" | cut -d'/' -f5)
+            local pci
+            pci=$(basename "${g}")
+            echo "  Group ${group}: $(lspci -nns "${pci}" 2>/dev/null | head -1)"
+        done
+    else
+        echo "  IOMMU not enabled. Enable in BIOS (VT-d / AMD-Vi)"
+    fi
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+COMMAND="${1:-}"
+SUBCOMMAND="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${COMMAND}" in
+    install)    cmd_install "${SUBCOMMAND}" "$@" ;;
+    remove)     cmd_remove "${SUBCOMMAND}" ;;
+    start)      docker compose -f "${DEPLOY_ROOT}/compose/${SUBCOMMAND}/docker-compose.yml" up -d ;;
+    stop)       docker compose -f "${DEPLOY_ROOT}/compose/${SUBCOMMAND}/docker-compose.yml" down ;;
+    restart)    docker compose -f "${DEPLOY_ROOT}/compose/${SUBCOMMAND}/docker-compose.yml" restart ;;
+    update)     docker compose -f "${DEPLOY_ROOT}/compose/${SUBCOMMAND}/docker-compose.yml" pull && \
+                docker compose -f "${DEPLOY_ROOT}/compose/${SUBCOMMAND}/docker-compose.yml" up -d ;;
+    logs)       docker compose -f "${DEPLOY_ROOT}/compose/${SUBCOMMAND}/docker-compose.yml" logs -f --tail=100 ;;
+    catalog)    cmd_catalog ;;
+    search)     python3 -c "
+import json,sys
+with open('${CATALOG_FILE}') as f:
+    data = json.load(f)
+q = '${SUBCOMMAND}'.lower()
+for cat in data['categories']:
+    for app in cat['apps']:
+        if q in app['id'].lower() or q in app['name'].lower() or q in app['desc'].lower():
+            print(f'  {app[\"id\"]:20s} {app[\"name\"]:20s} {app[\"desc\"]}')
+" ;;
+    installed)  cmd_installed ;;
+    vm)
+        case "${SUBCOMMAND}" in
+            create)    cmd_vm_create "$@" ;;
+            list)      cmd_vm_list ;;
+            start)     virsh start "$@" ;;
+            stop)      virsh shutdown "$@" ;;
+            kill)      virsh destroy "$@" ;;
+            delete)    virsh undefine --remove-all-storage "$@" ;;
+            console)   cmd_vm_console "$@" ;;
+            ssh)       ssh "$@" ;;
+            snapshot)  virsh snapshot-create-as "$@" ;;
+            migrate)   cmd_vm_migrate "$@" ;;
+            templates) cmd_vm_templates ;;
+            *)         usage ;;
+        esac
+        ;;
+    gpu)
+        case "${SUBCOMMAND}" in
+            list)   cmd_gpu_list ;;
+            *)      usage ;;
+        esac
+        ;;
+    *)  usage ;;
+esac
