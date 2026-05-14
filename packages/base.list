@@ -18,7 +18,6 @@ mtools
 dosfstools
 
 # --- Kernel ---
-linux-image-amd64
 
 # --- Shell & utilities ---
 bash
