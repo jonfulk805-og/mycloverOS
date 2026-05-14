@@ -61,6 +61,7 @@ log "live-build version: ${LB_VERSION_RAW}"
 
 LB_ARGS=(
     --distribution "${BASE_CODENAME}"
+    --archive-areas "main"
     --architectures "${BASE_ARCH}"
     --mirror-bootstrap "${BASE_MIRROR}"
     --mirror-chroot "${BASE_MIRROR}"
