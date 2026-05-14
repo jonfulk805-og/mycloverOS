@@ -10,6 +10,15 @@ dbus
 udev
 init
 
+# --- Bootloader (needed for ISO creation) ---
+isolinux
+syslinux-common
+grub-efi-amd64-bin
+grub-pc-bin
+grub-common
+mtools
+dosfstools
+
 # --- Kernel ---
 linux-image-amd64
 
