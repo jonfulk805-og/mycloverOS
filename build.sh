@@ -86,7 +86,7 @@ LB_ARGS=(
     --binary-images iso-hybrid
     --iso-application "${DISTRO_NAME}"
     --iso-volume "${ISO_LABEL}"
-    --bootappend-live "boot=live components hostname=${DEFAULT_HOSTNAME} username=${DEFAULT_USER}"
+    --bootappend-live "boot=live components hostname=${DEFAULT_HOSTNAME} username=${DEFAULT_USER} loglevel=3"
     --memtest none
     --apt-recommends false
     --cache true
