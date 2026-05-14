@@ -80,8 +80,7 @@ LB_ARGS=(
     --apt-recommends false
     --cache true
     --keyring-packages debian-archive-keyring
-    --linux-packages "linux-image"
-    --linux-flavours "amd64"
+    --linux-packages "none"
     --apt-indices false
 )
 
