@@ -55,9 +55,9 @@ cd "${BUILD_WORK}"
 # --- Configure live-build ----------------------------------------------------
 log "Configuring live-build..."
 
-# Detect live-build version for flag compatibility
-LB_VERSION=$(lb --version 2>/dev/null | head -1 | grep -oP '[\d]+' | head -1 || echo "5")
-log "live-build major version: ${LB_VERSION}"
+# Log live-build version for debugging
+LB_VERSION_RAW=$(lb --version 2>/dev/null || echo "unknown")
+log "live-build version: ${LB_VERSION_RAW}"
 
 LB_ARGS=(
     --distribution "${BASE_CODENAME}"
