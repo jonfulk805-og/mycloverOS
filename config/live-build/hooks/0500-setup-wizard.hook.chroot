@@ -1,0 +1,37 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Install First-Boot Setup Wizard
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Installing first-boot setup wizard..."
+
+# Create wizard directory
+mkdir -p /opt/myclover/setup-wizard
+
+# Copy wizard files (placed by overlay)
+# The wizard Python script and systemd service are in the overlay
+# Just enable the service
+if [ -f /etc/systemd/system/myclover-setup-wizard.service ]; then
+    systemctl enable myclover-setup-wizard 2>/dev/null || true
+    echo "[mycloverOS] Setup wizard enabled for first boot"
+fi
+
+# Allow port 8080 through UFW for the wizard
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow 8080/tcp comment 'mycloverOS Setup Wizard' 2>/dev/null || true
+fi
+
+# Create MOTD banner that points users to the wizard
+cat > /etc/motd << 'MOTD'
+
+  🍀 mycloverOS v0.1.0 (seedling)
+
+  First-time setup? Open a browser and visit:
+  → http://<this-ip>:8080
+
+  After setup is complete, this message will update.
+
+MOTD
+
+echo "[mycloverOS] Setup wizard installed"
