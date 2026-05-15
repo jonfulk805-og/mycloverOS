@@ -67,7 +67,7 @@ log "live-build version: ${LB_VERSION_RAW}"
 
 LB_ARGS=(
     --distribution "${BASE_CODENAME}"
-    --archive-areas "main"
+    --archive-areas "main contrib"
     --architectures "${BASE_ARCH}"
     --mirror-bootstrap "${BASE_MIRROR}"
     --mirror-chroot "${BASE_MIRROR}"
@@ -83,6 +83,9 @@ LB_ARGS=(
     --linux-packages "linux-image"
     --linux-flavours "amd64"
     --apt-indices false
+    --bootloaders grub-efi
+    --initramfs live-boot
+    --initsystem systemd
 )
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
