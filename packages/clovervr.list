@@ -1,0 +1,62 @@
+# =============================================================================
+# mycloverOS CloverVR Packages
+# Dependencies for VR streaming, social VR, and content creation
+# =============================================================================
+
+# --- GPU / Graphics ---
+# NVIDIA drivers installed via build hook (proprietary)
+mesa-utils
+mesa-vulkan-drivers
+vulkan-tools
+libvulkan1
+
+# --- VR Runtime (Monado / OpenXR) ---
+# Monado installed via build hook from source or PPA
+libopenxr-loader1
+libopenxr-dev
+
+# --- Video encoding / streaming ---
+ffmpeg
+libavcodec-extra
+gstreamer1.0-tools
+gstreamer1.0-plugins-base
+gstreamer1.0-plugins-good
+gstreamer1.0-plugins-bad
+gstreamer1.0-plugins-ugly
+gstreamer1.0-libav
+libx264-dev
+libx265-dev
+
+# --- 3D / Content creation ---
+blender
+# Godot 4 installed via build hook (AppImage or Flatpak)
+
+# --- Audio (spatial audio for social VR) ---
+pipewire
+pipewire-pulse
+libspa-0.2-modules
+
+# --- Network optimization ---
+# Wi-Fi tools already in networking.list
+ethtool
+
+# --- USB / HID (headset connectivity) ---
+libusb-1.0-0
+libudev-dev
+usbutils
+
+# --- Python (for ALVR/WiVRn management scripts) ---
+python3-websockets
+python3-aiohttp
+
+# --- Build dependencies (for Monado/ALVR compilation) ---
+cmake
+meson
+ninja-build
+libusb-1.0-0-dev
+libeigen3-dev
+libgl-dev
+libglx-dev
+libwayland-dev
+libxrandr-dev
+libxcb-randr0-dev
