@@ -1,0 +1,84 @@
+# =============================================================================
+# mycloverOS CloverStrike Packages
+# Dependencies for penetration testing and security audit suite
+# Enterprise-only module
+# =============================================================================
+
+# --- Network scanning ---
+nmap
+masscan
+
+# --- Vulnerability scanning ---
+# OpenVAS (Greenbone) installed via Docker (build hook)
+
+# --- Web application testing ---
+nikto
+dirb
+# OWASP ZAP installed via Docker (build hook)
+# Gobuster / ffuf installed via build hook (Go binaries)
+
+# --- Password cracking ---
+hashcat
+john
+hydra
+medusa
+
+# --- Wireless auditing ---
+aircrack-ng
+kismet
+reaver
+# hostapd already in networking.list
+
+# --- Network analysis ---
+tcpdump
+wireshark-common
+tshark
+netcat-openbsd
+socat
+proxychains4
+tor
+
+# --- Exploitation framework ---
+# Metasploit installed via Docker (build hook)
+# Sliver C2 installed via build hook (binary download)
+
+# --- Active Directory / LDAP ---
+smbclient
+ldap-utils
+# BloodHound / Impacket / CrackMapExec via Python pip in build hook
+
+# --- Phishing ---
+# GoPhish installed via build hook (Go binary)
+
+# --- Forensics / analysis ---
+binwalk
+foremost
+exiftool
+
+# --- Crypto / SSL tools ---
+sslscan
+openssl
+gnupg
+
+# --- DNS recon ---
+dnsutils
+dnsrecon
+dnsenum
+
+# --- Python dependencies (for security tools) ---
+python3-scapy
+python3-impacket
+python3-paramiko
+python3-requests
+python3-bs4
+python3-shodan
+
+# --- Reporting ---
+python3-reportlab
+# WeasyPrint via pip in build hook (complex deps)
+
+# --- General utilities ---
+jq
+xmlstarlet
+p7zip-full
+whois
