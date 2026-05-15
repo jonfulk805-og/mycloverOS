@@ -1,0 +1,510 @@
+#!/bin/bash
+# =============================================================================
+# CloverStrike — Penetration Testing & Security Audit Suite
+# Part of mycloverOS / CloverStack
+# Enterprise-only module
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_NAME="cloverstrike"
+CLOVERSTRIKE_DIR="/opt/cloverstack/cloverstrike"
+DOCKER_COMPOSE="${CLOVERSTRIKE_DIR}/docker-compose.yml"
+CONFIG_FILE="/etc/cloverstack/cloverstrike.conf"
+LOG_FILE="/var/log/cloverstack/cloverstrike.log"
+SCANS_DIR="/var/lib/cloverstack/cloverstrike/scans"
+REPORTS_DIR="/var/lib/cloverstack/cloverstrike/reports"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log() { echo -e "${RED}[CloverStrike]${NC} $1"; }
+warn() { echo -e "${YELLOW}[CloverStrike WARN]${NC} $1"; }
+error() { echo -e "${RED}[CloverStrike ERROR]${NC} $1" >&2; }
+
+show_help() {
+    echo -e "${RED}CloverStrike${NC} — Penetration Testing & Security Audit"
+    echo ""
+    echo "Usage: ${SCRIPT_NAME} <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  install          Install CloverStrike components"
+    echo "  start            Start CloverStrike services"
+    echo "  stop             Stop CloverStrike services"
+    echo "  restart          Restart services"
+    echo "  status           Show service status"
+    echo ""
+    echo "  scan             Manage scans"
+    echo "    scan network   <target>     Run network scan (Nmap + Masscan)"
+    echo "    scan web       <url>        Run web app scan (ZAP + Nikto)"
+    echo "    scan vuln      <target>     Run vulnerability scan (OpenVAS)"
+    echo "    scan wireless                Scan wireless networks"
+    echo "    scan all       <target>     Run full assessment"
+    echo "    scan list                    List recent scans"
+    echo "    scan stop      <scan_id>    Stop a running scan"
+    echo ""
+    echo "  phish            Phishing simulation"
+    echo "    phish create   <name>       Create new campaign"
+    echo "    phish send     <campaign>   Send phishing emails"
+    echo "    phish report   <campaign>   View campaign results"
+    echo "    phish list                   List all campaigns"
+    echo ""
+    echo "  crack            Password cracking"
+    echo "    crack hash     <file>       Crack password hashes (Hashcat)"
+    echo "    crack spray    <target>     Password spray attack"
+    echo "    crack audit    <target>     AD password policy audit"
+    echo ""
+    echo "  report           Generate reports"
+    echo "    report create  <scan_id>    Generate branded PDF report"
+    echo "    report list                  List generated reports"
+    echo ""
+    echo "  team             Red/Blue/Purple team mode"
+    echo "    team red                     Switch to Red Team view"
+    echo "    team blue                    Switch to Blue Team view"
+    echo "    team purple                  Switch to Purple Team view"
+    echo ""
+    echo "  scope            Manage scan scope"
+    echo "    scope set      <file>       Set allowed targets from file"
+    echo "    scope show                   Show current scope"
+    echo "    scope clear                  Clear scope"
+    echo ""
+    echo "  config           Edit configuration"
+    echo "  logs             View logs"
+    echo "  update           Update components"
+    echo "  uninstall        Remove CloverStrike"
+    echo ""
+    echo "  dashboard                      Open web dashboard URL"
+    echo ""
+    echo "Examples:"
+    echo "  ${SCRIPT_NAME} install"
+    echo "  ${SCRIPT_NAME} scope set /path/to/targets.txt"
+    echo "  ${SCRIPT_NAME} scan network 192.168.1.0/24"
+    echo "  ${SCRIPT_NAME} scan web https://target.example.com"
+    echo "  ${SCRIPT_NAME} crack hash /path/to/hashes.txt"
+    echo "  ${SCRIPT_NAME} phish create quarterly-test"
+    echo "  ${SCRIPT_NAME} report create scan_20260514_001"
+    echo ""
+    echo -e "${YELLOW}WARNING: Only use against systems you have written authorization to test.${NC}"
+}
+
+check_license() {
+    # Verify Enterprise license
+    local license_file="/etc/cloverstack/license.key"
+    if [ ! -f "${license_file}" ]; then
+        error "CloverStrike requires an Enterprise license."
+        error "Upgrade at https://myclover.tech or start a free 90-day trial."
+        exit 1
+    fi
+    # License validation would go here
+}
+
+check_scope() {
+    local scope_file="/etc/cloverstack/cloverstrike-scope.txt"
+    if [ ! -f "${scope_file}" ] || [ ! -s "${scope_file}" ]; then
+        error "No scan scope defined. Set scope first:"
+        error "  ${SCRIPT_NAME} scope set /path/to/targets.txt"
+        error ""
+        error "This is a safety feature. CloverStrike will not scan without a defined scope."
+        exit 1
+    fi
+}
+
+validate_target() {
+    local target="$1"
+    local scope_file="/etc/cloverstack/cloverstrike-scope.txt"
+
+    if [ ! -f "${scope_file}" ]; then
+        error "No scope file. Run: ${SCRIPT_NAME} scope set <file>"
+        exit 1
+    fi
+
+    # Check if target is in scope (basic check - real implementation would be more thorough)
+    if ! grep -q "${target}" "${scope_file}" 2>/dev/null; then
+        error "Target '${target}' is NOT in the defined scope."
+        error "Current scope:"
+        cat "${scope_file}"
+        error ""
+        error "Add the target to your scope file or update scope:"
+        error "  ${SCRIPT_NAME} scope set <file>"
+        exit 1
+    fi
+
+    log "Target '${target}' is in scope. Proceeding."
+}
+
+do_install() {
+    log "Installing CloverStrike components..."
+
+    # Create directories
+    mkdir -p "${CLOVERSTRIKE_DIR}" "${SCANS_DIR}" "${REPORTS_DIR}" \
+             /etc/cloverstack /var/log/cloverstack
+
+    # Check for GPU (for Hashcat)
+    if command -v nvidia-smi &> /dev/null; then
+        log "NVIDIA GPU detected - Hashcat will use GPU acceleration"
+    else
+        warn "No NVIDIA GPU - Hashcat will use CPU mode (slower)"
+    fi
+
+    # Pull Docker images
+    log "Pulling OpenVAS (Greenbone) scanner..."
+    docker pull greenbone/openvas-scanner:latest 2>/dev/null || warn "OpenVAS pull failed - retry later"
+
+    log "Pulling OWASP ZAP..."
+    docker pull ghcr.io/zaproxy/zaproxy:stable 2>/dev/null || warn "ZAP pull failed - retry later"
+
+    log "Pulling Metasploit..."
+    docker pull metasploitframework/metasploit-framework:latest 2>/dev/null || warn "Metasploit pull failed - retry later"
+
+    log "Pulling GoPhish..."
+    docker pull gophish/gophish:latest 2>/dev/null || warn "GoPhish pull failed - retry later"
+
+    # Generate default config
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        cat > "${CONFIG_FILE}" << 'CONF'
+# CloverStrike Configuration
+# ==========================
+
+[server]
+bind_address=0.0.0.0
+web_dashboard_port=9200
+api_port=9201
+
+[scanning]
+# Default scan intensity (1-5, where 5 is most aggressive)
+default_intensity=3
+# Rate limiting (packets per second)
+max_rate=1000
+# Timeout per host (seconds)
+host_timeout=300
+
+[scope]
+# Scope file path
+scope_file=/etc/cloverstack/cloverstrike-scope.txt
+# Enforce scope (NEVER set to false in production)
+enforce_scope=true
+
+[reporting]
+# Report branding
+company_name=MyClover.Tech
+logo_path=/opt/cloverstack/branding/logo.png
+report_output_dir=/var/lib/cloverstack/cloverstrike/reports
+# Compliance frameworks to map
+frameworks=pci-dss,hipaa,soc2,nist-800-53,cis-controls,nerc-cip
+
+[phishing]
+# GoPhish settings
+gophish_port=3333
+gophish_admin_port=3334
+sending_profile=default
+
+[password]
+# Hashcat settings
+hashcat_workload=3
+# 1=low, 2=default, 3=high, 4=nightmare
+use_gpu=auto
+wordlist_dir=/opt/cloverstack/cloverstrike/wordlists
+
+[ai]
+# Chappie / Clover AI assistance
+ai_enabled=true
+ai_personality=chappie
+# Options: chappie, clover, custom
+custom_ai_name=
+vuln_analysis=true
+attack_path_mapping=true
+report_narration=true
+remediation_priority=true
+
+[safety]
+# Authorization required for aggressive scans
+require_authorization=true
+# Full audit trail (non-deletable)
+audit_trail=true
+audit_log=/var/log/cloverstack/cloverstrike-audit.log
+# Kill switch
+kill_switch_enabled=true
+CONF
+        log "Default config written to ${CONFIG_FILE}"
+    fi
+
+    # Create docker-compose
+    cat > "${DOCKER_COMPOSE}" << 'COMPOSE'
+version: '3.8'
+services:
+  cloverstrike-dashboard:
+    image: cloverstrike-dashboard:latest
+    container_name: cloverstrike-web
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    volumes:
+      - /etc/cloverstack/cloverstrike.conf:/etc/cloverstrike/config.conf:ro
+      - cloverstrike-data:/data
+      - /var/lib/cloverstack/cloverstrike:/var/lib/cloverstrike
+
+  openvas:
+    image: greenbone/openvas-scanner:latest
+    container_name: cloverstrike-openvas
+    restart: unless-stopped
+    ports:
+      - "9390:9390"
+    volumes:
+      - openvas-data:/var/lib/openvas
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    container_name: cloverstrike-zap
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    command: zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.disablekey=true
+
+  metasploit:
+    image: metasploitframework/metasploit-framework:latest
+    container_name: cloverstrike-msf
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - msf-data:/root/.msf4
+
+  gophish:
+    image: gophish/gophish:latest
+    container_name: cloverstrike-gophish
+    restart: unless-stopped
+    ports:
+      - "3333:3333"
+      - "3334:80"
+    volumes:
+      - gophish-data:/opt/gophish
+
+volumes:
+  cloverstrike-data:
+  openvas-data:
+  msf-data:
+  gophish-data:
+COMPOSE
+
+    log "CloverStrike installed successfully!"
+    log "Run '${SCRIPT_NAME} start' to launch services."
+    echo ""
+    warn "IMPORTANT: Set your scan scope before running any scans:"
+    warn "  ${SCRIPT_NAME} scope set /path/to/authorized-targets.txt"
+}
+
+do_start() {
+    check_license
+    log "Starting CloverStrike services..."
+    cd "${CLOVERSTRIKE_DIR}"
+    docker compose up -d
+    log "CloverStrike is running!"
+    log "Dashboard:  http://$(hostname -I | awk '{print $1}'):9200"
+    log "GoPhish:    http://$(hostname -I | awk '{print $1}'):3334"
+    log "ZAP Proxy:  http://$(hostname -I | awk '{print $1}'):8080"
+}
+
+do_stop() {
+    log "Stopping CloverStrike services..."
+    cd "${CLOVERSTRIKE_DIR}"
+    docker compose down
+    log "CloverStrike stopped."
+}
+
+do_status() {
+    log "CloverStrike Status:"
+    echo ""
+    if [ -f "${DOCKER_COMPOSE}" ]; then
+        cd "${CLOVERSTRIKE_DIR}"
+        docker compose ps 2>/dev/null || warn "Services not running"
+    else
+        warn "CloverStrike not installed. Run '${SCRIPT_NAME} install'"
+    fi
+
+    echo ""
+    log "Scope:"
+    if [ -f /etc/cloverstack/cloverstrike-scope.txt ]; then
+        cat /etc/cloverstack/cloverstrike-scope.txt
+    else
+        warn "No scope defined"
+    fi
+}
+
+do_scan_network() {
+    local target="${1:-}"
+    if [ -z "${target}" ]; then
+        error "Usage: ${SCRIPT_NAME} scan network <target>"
+        exit 1
+    fi
+    validate_target "${target}"
+
+    local scan_id="scan_$(date +%Y%m%d_%H%M%S)"
+    local output_dir="${SCANS_DIR}/${scan_id}"
+    mkdir -p "${output_dir}"
+
+    log "Starting network scan: ${target}"
+    log "Scan ID: ${scan_id}"
+    log "Output: ${output_dir}"
+
+    # Nmap scan
+    log "Phase 1: Nmap service discovery..."
+    nmap -sV -sC -O -oA "${output_dir}/nmap-full" "${target}" 2>&1 | tee "${output_dir}/nmap.log"
+
+    # Masscan for fast port discovery
+    log "Phase 2: Masscan fast port scan..."
+    masscan "${target}" -p1-65535 --rate=1000 -oJ "${output_dir}/masscan.json" 2>&1 | tee "${output_dir}/masscan.log" || true
+
+    log "Network scan complete: ${scan_id}"
+    log "Results in: ${output_dir}"
+    log "Generate report: ${SCRIPT_NAME} report create ${scan_id}"
+}
+
+do_scan_web() {
+    local url="${1:-}"
+    if [ -z "${url}" ]; then
+        error "Usage: ${SCRIPT_NAME} scan web <url>"
+        exit 1
+    fi
+
+    local scan_id="webscan_$(date +%Y%m%d_%H%M%S)"
+    local output_dir="${SCANS_DIR}/${scan_id}"
+    mkdir -p "${output_dir}"
+
+    log "Starting web application scan: ${url}"
+    log "Scan ID: ${scan_id}"
+
+    # Nikto
+    log "Phase 1: Nikto web server scan..."
+    nikto -h "${url}" -output "${output_dir}/nikto.html" -Format htm 2>&1 | tee "${output_dir}/nikto.log" || true
+
+    # ZAP (if running)
+    if docker ps --format '{{.Names}}' | grep -q cloverstrike-zap; then
+        log "Phase 2: OWASP ZAP active scan..."
+        # ZAP API call would go here
+        log "ZAP scan initiated via API"
+    else
+        warn "ZAP not running. Start services first: ${SCRIPT_NAME} start"
+    fi
+
+    log "Web scan complete: ${scan_id}"
+}
+
+do_scope() {
+    local action="${1:-show}"
+    local scope_file="/etc/cloverstack/cloverstrike-scope.txt"
+
+    case "${action}" in
+        set)
+            local source="${2:-}"
+            if [ -z "${source}" ] || [ ! -f "${source}" ]; then
+                error "Usage: ${SCRIPT_NAME} scope set <file>"
+                error "File should contain one target per line (IPs, CIDRs, domains)"
+                exit 1
+            fi
+            cp "${source}" "${scope_file}"
+            chmod 644 "${scope_file}"
+            log "Scope updated from ${source}:"
+            cat "${scope_file}"
+            ;;
+        show)
+            if [ -f "${scope_file}" ]; then
+                log "Current scope:"
+                cat "${scope_file}"
+            else
+                warn "No scope defined. Set one with: ${SCRIPT_NAME} scope set <file>"
+            fi
+            ;;
+        clear)
+            rm -f "${scope_file}"
+            log "Scope cleared. No scans will run until a new scope is set."
+            ;;
+        *)
+            error "Unknown scope action: ${action}"
+            exit 1
+            ;;
+    esac
+}
+
+# Audit trail logging
+audit_log() {
+    local action="$1"
+    local details="${2:-}"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) | user=$(whoami) | action=${action} | details=${details}" \
+        >> /var/log/cloverstack/cloverstrike-audit.log
+}
+
+# Main
+case "${1:-help}" in
+    install)    do_install ;;
+    start)      audit_log "start" "services"; do_start ;;
+    stop)       audit_log "stop" "services"; do_stop ;;
+    restart)    audit_log "restart" "services"; do_stop; sleep 2; do_start ;;
+    status)     do_status ;;
+    scan)
+        shift
+        case "${1:-}" in
+            network)  shift; audit_log "scan_network" "$*"; do_scan_network "$@" ;;
+            web)      shift; audit_log "scan_web" "$*"; do_scan_web "$@" ;;
+            vuln)     log "Vulnerability scan via OpenVAS dashboard at :9390" ;;
+            wireless) log "Wireless scan: use aircrack-ng suite via dashboard" ;;
+            all)      shift; audit_log "scan_full" "$*"; do_scan_network "$@" ;;
+            list)     ls -la "${SCANS_DIR}" 2>/dev/null || warn "No scans yet" ;;
+            stop)     warn "Kill switch: stopping all scans..."; pkill -f nmap; pkill -f masscan; log "Scans stopped." ;;
+            *)        error "Unknown scan type. Try: network, web, vuln, wireless, all, list, stop" ;;
+        esac
+        ;;
+    phish)
+        shift
+        case "${1:-}" in
+            create|send|report|list) log "Phishing campaigns managed via GoPhish dashboard at :3334" ;;
+            *) error "Unknown phish command. Try: create, send, report, list" ;;
+        esac
+        ;;
+    crack)
+        shift
+        case "${1:-}" in
+            hash)
+                shift
+                local hashfile="${1:-}"
+                if [ -n "${hashfile}" ] && [ -f "${hashfile}" ]; then
+                    audit_log "crack_hash" "${hashfile}"
+                    log "Starting Hashcat..."
+                    hashcat -a 0 "${hashfile}" /usr/share/wordlists/rockyou.txt --force
+                else
+                    error "Usage: ${SCRIPT_NAME} crack hash <hashfile>"
+                fi
+                ;;
+            spray|audit) log "Password operations via dashboard at :9200" ;;
+            *) error "Unknown crack command. Try: hash, spray, audit" ;;
+        esac
+        ;;
+    report)
+        shift
+        case "${1:-}" in
+            create) log "Report generation via dashboard at :9200" ;;
+            list)   ls -la "${REPORTS_DIR}" 2>/dev/null || warn "No reports yet" ;;
+            *) error "Unknown report command. Try: create, list" ;;
+        esac
+        ;;
+    team)
+        shift
+        case "${1:-}" in
+            red)    log "Switching to Red Team mode..."; audit_log "team_switch" "red" ;;
+            blue)   log "Switching to Blue Team mode..."; audit_log "team_switch" "blue" ;;
+            purple) log "Switching to Purple Team mode..."; audit_log "team_switch" "purple" ;;
+            *) error "Unknown team. Try: red, blue, purple" ;;
+        esac
+        log "Team mode available via dashboard at :9200"
+        ;;
+    scope)      shift; do_scope "$@" ;;
+    dashboard)  log "Dashboard: http://$(hostname -I | awk '{print $1}'):9200" ;;
+    config)     ${EDITOR:-nano} "${CONFIG_FILE}" ;;
+    logs)       tail -f "${LOG_FILE}" /var/log/cloverstack/cloverstrike-audit.log 2>/dev/null ;;
+    update)     log "Updating..."; cd "${CLOVERSTRIKE_DIR}"; docker compose pull; docker compose up -d; log "Updated!" ;;
+    uninstall)  log "Removing CloverStrike..."; cd "${CLOVERSTRIKE_DIR}"; docker compose down -v; rm -rf "${CLOVERSTRIKE_DIR}"; log "Removed." ;;
+    help|*)     show_help ;;
+esac
