@@ -28,6 +28,15 @@ mkdir -p /var/lib/cloverstack
 mkdir -p /var/log/cloverstack
 mkdir -p /etc/myclover/modules.d
 
+# --- Wait for setup wizard to complete (if running) -------------------------
+if systemctl is-active --quiet myclover-setup-wizard 2>/dev/null; then
+    log "Setup wizard is running -- waiting for it to complete before provisioning..."
+    while [ ! -f /etc/myclover/.setup-complete ] && systemctl is-active --quiet myclover-setup-wizard 2>/dev/null; do
+        sleep 5
+    done
+    log "Setup wizard complete -- proceeding with provisioning"
+fi
+
 # --- Docker setup ------------------------------------------------------------
 log "Configuring Docker..."
 systemctl enable docker
@@ -73,7 +82,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "8080:8080"
+      - "8082:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./config:/etc/traefik
@@ -131,6 +140,8 @@ ufw allow ssh
 ufw allow 80/tcp    # HTTP
 ufw allow 443/tcp   # HTTPS
 ufw allow 9443/tcp  # Portainer
+ufw allow 8080/tcp  # mycloverOS Setup Wizard
+ufw allow 8082/tcp  # Traefik Dashboard
 ufw --force enable
 
 # --- Cleanup -----------------------------------------------------------------
