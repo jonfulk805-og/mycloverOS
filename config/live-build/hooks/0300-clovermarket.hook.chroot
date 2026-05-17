@@ -1,0 +1,55 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Install CloverMarket app marketplace
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Installing CloverMarket..."
+
+# --- Create directory structure -----------------------------------------------
+mkdir -p /opt/clovermarket/{apps,cache,wizards}
+mkdir -p /opt/cloverstack/themes/{builtin,custom}
+mkdir -p /etc/myclover/themes
+mkdir -p /var/lib/clovermarket
+
+# --- Install Python dependencies for marketplace server ----------------------
+pip3 install --break-system-packages pyyaml 2>/dev/null || pip3 install pyyaml 2>/dev/null || true
+
+# --- Install clovermarket-ctl ------------------------------------------------
+chmod +x /usr/local/bin/clovermarket-ctl 2>/dev/null || true
+ln -sf /usr/local/bin/clovermarket-ctl /usr/local/bin/clovermarket 2>/dev/null || true
+
+# --- Set default theme -------------------------------------------------------
+echo "clover-classic" > /etc/myclover/themes/active
+
+# Generate initial CSS from Clover Classic theme
+if [ -f /opt/cloverstack/themes/builtin/clover-classic.clover-theme ]; then
+    python3 -c "
+import json
+with open('/opt/cloverstack/themes/builtin/clover-classic.clover-theme') as f:
+    theme = json.load(f)
+tokens = theme.get('tokens', {})
+css = ':root {\n'
+for k, v in tokens.items():
+    css += f'  --clover-{k}: {v};\n'
+css += '}\n'
+with open('/etc/myclover/themes/active.css', 'w') as f:
+    f.write(css)
+print('[mycloverOS] Default theme CSS generated')
+" 2>/dev/null || echo "[mycloverOS] Theme CSS generation deferred to first boot"
+fi
+
+# --- Initialize empty wallet --------------------------------------------------
+echo '{"balance":0,"transactions":[]}' > /var/lib/clovermarket/wallet.json
+
+# --- Allow marketplace port through UFW (if installed) ------------------------
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow 8090/tcp comment 'CloverMarket' 2>/dev/null || true
+fi
+
+# --- Enable CloverMarket systemd service if available -------------------------
+if [ -f /etc/systemd/system/clovermarket.service ]; then
+    systemctl enable clovermarket 2>/dev/null || true
+fi
+
+echo "[mycloverOS] CloverMarket installed"
