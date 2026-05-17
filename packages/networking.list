@@ -5,24 +5,24 @@
 
 # --- VPN ---
 # wireguard + wireguard-tools already in cloverstack.list
-openvpn
+# openvpn  # trimmed: install on demand
 
 # --- Mesh / routing ---
-batctl
+# batctl  # trimmed: install on demand
 avahi-daemon
 avahi-utils
 
 # --- Advanced networking ---
 vlan
-ifenslave
-hostapd
+# ifenslave  # trimmed: install on demand
+# hostapd  # trimmed: install on demand
 dnsmasq
 
 # --- Wireless ---
-wireless-tools
-iw
-wpasupplicant
-rfkill
+# wireless-tools  # trimmed: install on demand
+# iw  # trimmed: install on demand
+# wpasupplicant  # trimmed: install on demand
+# rfkill  # trimmed: install on demand
 
 # --- Firewall ---
 # nftables already in base.list
@@ -34,10 +34,10 @@ nethogs
 bmon
 mtr-tiny
 traceroute
-whois
+# whois  # trimmed: install on demand
 
 # --- SNMP ---
 # snmp + snmpd already in cloverstack.list
 
 # --- LLDP ---
-lldpd
+# lldpd  # trimmed: install on demand
