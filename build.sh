@@ -235,6 +235,14 @@ if [[ -n "${ISO_PATH}" ]]; then
 
     # Write checksum file
     echo "${ISO_SHA}  $(basename "${FINAL_ISO}")" > "${FINAL_ISO}.sha256"
+
+    # Compress ISO with zstd for smaller download
+    if command -v zstd &>/dev/null; then
+        log "Compressing ISO with zstd..."
+        zstd -T0 -10 "${FINAL_ISO}" -o "${FINAL_ISO}.zst"
+        ZST_SIZE=$(du -h "${FINAL_ISO}.zst" | cut -f1)
+        log "  Compressed: ${FINAL_ISO}.zst (${ZST_SIZE})"
+    fi
 else
     err "Build failed -- no ISO produced. Check ${SCRIPT_DIR}/${BUILD_DIR}/build-${EDITION}.log"
     exit 1
