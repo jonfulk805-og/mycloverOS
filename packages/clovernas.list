@@ -16,9 +16,9 @@ samba-common-bin
 nfs-kernel-server
 nfs-common
 # iSCSI target (LIO alternative)
-tgt
+# tgt  # trimmed: install via CloverMarket
 # iSCSI initiator (for cluster replication)
-open-iscsi
+# open-iscsi  # trimmed: install via CloverMarket
 # FTP/SFTP
 proftpd-basic
 
@@ -26,40 +26,40 @@ proftpd-basic
 smartmontools
 
 # --- Virtual machine support (KVM/QEMU) ---
-qemu-system-x86
-qemu-utils
-libvirt-daemon-system
-libvirt-clients
-virtinst
+# qemu-system-x86  # trimmed: install via CloverMarket
+# qemu-utils  # trimmed: install via CloverMarket
+# libvirt-daemon-system  # trimmed: install via CloverMarket
+# libvirt-clients  # trimmed: install via CloverMarket
+# virtinst  # trimmed: install via CloverMarket
 # UEFI firmware for VMs
-ovmf
+# ovmf  # trimmed: install via CloverMarket
 
 # --- VM console access ---
 # noVNC is deployed via Docker container (see CloverDeploy catalog)
 
 # --- Cluster / High-Availability (CloverMesh) ---
 # Cluster messaging + quorum
-corosync
+# corosync  # trimmed: install via CloverMarket
 # Cluster resource manager
-pacemaker
+# pacemaker  # trimmed: install via CloverMarket
 # Pacemaker/Corosync CLI
-pcs
+# pcs  # trimmed: install via CloverMarket
 # Cluster resource shell
-crmsh
+# crmsh  # trimmed: install via CloverMarket
 # Fencing agents (IPMI, SSH, etc.)
-fence-agents
+# fence-agents  # trimmed: install via CloverMarket
 # HA resource agents
-resource-agents
+# resource-agents  # trimmed: install via CloverMarket
 # DRBD 9 block-level replication
-drbd-utils
+# drbd-utils  # trimmed: install via CloverMarket
 # Virtual IP (VIP) failover
 keepalived
 
 # --- Advanced networking for clusters ---
 # FRRouting (OSPF/BGP for MAN clusters)
-frr
+# frr  # trimmed: install via CloverMarket
 # Open vSwitch (SDN for datacenter tier)
-openvswitch-switch
+# openvswitch-switch  # trimmed: install via CloverMarket
 
 # --- Backup ---
 # restic already in cloverstack.list
@@ -74,9 +74,9 @@ lsscsi
 # NVMe drive management
 nvme-cli
 # Disk benchmarking
-fio
+# fio  # trimmed: install via CloverMarket
 # Filesystem benchmarking
-bonnie++
+# bonnie++  # trimmed: install via CloverMarket
 # Compression (ZFS default)
 zstd
 # Fast compression (ZFS L2ARC)
