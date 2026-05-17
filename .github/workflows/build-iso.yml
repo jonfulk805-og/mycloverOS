@@ -25,12 +25,23 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm
+      options: --privileged
     timeout-minutes: 60
 
     steps:
+      - name: Install system prerequisites
+        run: |
+          apt-get update
+          apt-get install -y git nodejs
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -42,8 +53,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             live-build \
             debootstrap \
             squashfs-tools \
@@ -56,12 +67,12 @@ jobs:
 
       - name: Build ISO
         run: |
-          sudo CLEAN=true ./build.sh ${{ steps.edition.outputs.edition }}
+          CLEAN=true ./build.sh ${{ steps.edition.outputs.edition }}
 
       - name: Prepare release assets
         id: prep
         run: |
-          source config/distro.conf
+          . config/distro.conf
           EDITION="${{ steps.edition.outputs.edition }}"
           ISO_FILE=$(find build/ -name '*.iso' -type f | head -1)
           if [ -z "$ISO_FILE" ]; then
