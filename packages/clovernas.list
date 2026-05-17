@@ -21,8 +21,6 @@ tgt
 open-iscsi
 # FTP/SFTP
 proftpd-basic
-# Alternative FTP (lightweight)
-vsftpd
 
 # --- S.M.A.R.T. disk monitoring ---
 smartmontools
