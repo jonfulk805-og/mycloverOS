@@ -33,18 +33,18 @@ less
 file
 tree
 htop
-btop
+# btop  # trimmed: install on demand
 nano
 vim-tiny
 tmux
-screen
+# screen  # trimmed: install on demand
 curl
 wget
 rsync
 zip
 unzip
 xz-utils
-pigz
+# pigz  # trimmed: install on demand
 
 # --- Filesystem ---
 e2fsprogs
@@ -65,8 +65,8 @@ net-tools
 isc-dhcp-client
 network-manager
 dnsutils
-nmap
-tcpdump
+# nmap  # trimmed: install on demand
+# tcpdump  # trimmed: install on demand
 iptables
 nftables
 ethtool
@@ -106,7 +106,7 @@ pciutils
 usbutils
 dmidecode
 lshw
-inxi
+# inxi  # trimmed: install on demand
 
 # --- Time ---
 chrony
