@@ -105,10 +105,26 @@ cd /opt/cloverstack/traefik && docker compose up -d 2>/dev/null || log "Traefik 
 
 # --- Enable default modules --------------------------------------------------
 log "Enabling default CloverStack modules..."
-for mod in ${CLOVERSTACK_DEFAULT_MODULES:-netmon sentrylog myclover-vault chappie}; do
+for mod in ${CLOVERSTACK_DEFAULT_MODULES:-netmon sentrylog myclover-vault chappie clovermarket}; do
     log "  Enabling: ${mod}"
     touch "/etc/myclover/modules.d/${mod}.enabled"
 done
+
+# --- Start CloverMarket ------------------------------------------------------
+if [[ -f "/etc/myclover/modules.d/clovermarket.enabled" ]]; then
+    log "Starting CloverMarket..."
+    if [[ -f /opt/cloverstack/modules/clovermarket/docker-compose.yml ]]; then
+        cd /opt/cloverstack/modules/clovermarket && docker compose up -d 2>/dev/null || log "CloverMarket start deferred"
+    fi
+    # Initialize marketplace directories
+    mkdir -p /opt/clovermarket/{apps,cache,wizards}
+    mkdir -p /var/lib/clovermarket
+    # Set default theme if not already set
+    if [[ ! -f /etc/myclover/themes/active ]]; then
+        echo "clover-classic" > /etc/myclover/themes/active
+        clovermarket-ctl theme apply clover-classic 2>/dev/null || true
+    fi
+fi
 
 # --- Generate machine ID -----------------------------------------------------
 log "Generating CloverStack machine identity..."
