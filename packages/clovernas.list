@@ -9,14 +9,20 @@
 # See: 0300-clovernas.hook.chroot
 
 # --- NAS protocol daemons ---
-samba                          # SMB/CIFS file sharing
+# SMB/CIFS file sharing
+samba
 samba-common-bin
-nfs-kernel-server              # NFS v3/v4
+# NFS v3/v4
+nfs-kernel-server
 nfs-common
-tgt                            # iSCSI target (LIO alternative)
-open-iscsi                     # iSCSI initiator (for cluster replication)
-proftpd-basic                  # FTP/SFTP
-vsftpd                         # Alternative FTP (lightweight)
+# iSCSI target (LIO alternative)
+tgt
+# iSCSI initiator (for cluster replication)
+open-iscsi
+# FTP/SFTP
+proftpd-basic
+# Alternative FTP (lightweight)
+vsftpd
 
 # --- S.M.A.R.T. disk monitoring ---
 smartmontools
@@ -27,24 +33,35 @@ qemu-utils
 libvirt-daemon-system
 libvirt-clients
 virtinst
-ovmf                          # UEFI firmware for VMs
+# UEFI firmware for VMs
+ovmf
 
 # --- VM console access ---
 # noVNC is deployed via Docker container (see CloverDeploy catalog)
 
 # --- Cluster / High-Availability (CloverMesh) ---
-corosync                       # Cluster messaging + quorum
-pacemaker                      # Cluster resource manager
-pcs                            # Pacemaker/Corosync CLI
-crmsh                          # Cluster resource shell
-fence-agents                   # Fencing agents (IPMI, SSH, etc.)
-resource-agents                # HA resource agents
-drbd-utils                     # DRBD 9 block-level replication
-keepalived                     # Virtual IP (VIP) failover
+# Cluster messaging + quorum
+corosync
+# Cluster resource manager
+pacemaker
+# Pacemaker/Corosync CLI
+pcs
+# Cluster resource shell
+crmsh
+# Fencing agents (IPMI, SSH, etc.)
+fence-agents
+# HA resource agents
+resource-agents
+# DRBD 9 block-level replication
+drbd-utils
+# Virtual IP (VIP) failover
+keepalived
 
 # --- Advanced networking for clusters ---
-frr                            # FRRouting (OSPF/BGP for MAN clusters)
-openvswitch-switch             # Open vSwitch (SDN for datacenter tier)
+# FRRouting (OSPF/BGP for MAN clusters)
+frr
+# Open vSwitch (SDN for datacenter tier)
+openvswitch-switch
 
 # --- Backup ---
 # restic already in cloverstack.list
@@ -56,8 +73,13 @@ openvswitch-switch             # Open vSwitch (SDN for datacenter tier)
 parted
 gdisk
 lsscsi
-nvme-cli                       # NVMe drive management
-fio                            # Disk benchmarking
-bonnie++                       # Filesystem benchmarking
-zstd                           # Compression (ZFS default)
-lz4                            # Fast compression (ZFS L2ARC)
+# NVMe drive management
+nvme-cli
+# Disk benchmarking
+fio
+# Filesystem benchmarking
+bonnie++
+# Compression (ZFS default)
+zstd
+# Fast compression (ZFS L2ARC)
+lz4
