@@ -130,6 +130,11 @@ cp "${SCRIPT_DIR}/packages/cloverstack.list" config/package-lists/cloverstack.li
 cp "${SCRIPT_DIR}/packages/networking.list" config/package-lists/networking.list.chroot
 cp "${SCRIPT_DIR}/packages/hardware.list" config/package-lists/hardware.list.chroot
 
+# CloverMarket
+if [[ -f "${SCRIPT_DIR}/packages/clovermarket.list" ]]; then
+    cp "${SCRIPT_DIR}/packages/clovermarket.list" config/package-lists/clovermarket.list.chroot
+fi
+
 # CloverNAS + CloverDeploy + CloverMesh (storage, containers, VMs, clustering)
 if [[ -f "${SCRIPT_DIR}/packages/clovernas.list" ]]; then
     cp "${SCRIPT_DIR}/packages/clovernas.list" config/package-lists/clovernas.list.chroot
@@ -159,8 +164,10 @@ cp "${SCRIPT_DIR}/scripts/myclover-install" config/includes.chroot/usr/local/bin
 cp "${SCRIPT_DIR}/scripts/myclover-provision" config/includes.chroot/usr/local/bin/
 cp "${SCRIPT_DIR}/scripts/myclover-update" config/includes.chroot/usr/local/bin/
 cp "${SCRIPT_DIR}/scripts/cloverstack-setup" config/includes.chroot/usr/local/bin/
-
-# CloverMarket app marketplace
+# CloverMarket
+if [[ -f "${SCRIPT_DIR}/scripts/clovermarket-ctl" ]]; then
+    cp "${SCRIPT_DIR}/scripts/clovermarket-ctl" config/includes.chroot/usr/local/bin/
+fi
 if [[ -f "${SCRIPT_DIR}/scripts/clovermarket" ]]; then
     cp "${SCRIPT_DIR}/scripts/clovermarket" config/includes.chroot/usr/local/bin/
 fi
@@ -170,7 +177,7 @@ fi
 
 chmod +x config/includes.chroot/usr/local/bin/myclover-*
 chmod +x config/includes.chroot/usr/local/bin/cloverstack-*
-chmod +x config/includes.chroot/usr/local/bin/clovermarket 2>/dev/null || true
+chmod +x config/includes.chroot/usr/local/bin/clovermarket* 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/cloverapp-picker 2>/dev/null || true
 
 # CloverNAS / CloverDeploy / CloverMesh CLI scripts
