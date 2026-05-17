@@ -1,28 +1,142 @@
-name: Build mycloverOS ISO
+name: Build & Release mycloverOS ISO
+
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      edition:
-        description: 'Edition to build'
-        required: true
-        default: 'server'
-        type: choice
-        options: [server, desktop, micro, kiosk]
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: 'Edition to build'
+        required: true
+        default: 'server'
+        type: choice
+        options:
+          - server
+          - desktop
+          - micro
+          - kiosk
+      create_release:
+        description: 'Create a GitHub Release'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y live-build debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools
-      - name: Build ISO
-        run: sudo ./build.sh ${{ github.event.inputs.edition || 'server' }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mycloverOS-iso
-          path: build/*.iso
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine edition
+        id: edition
+        run: |
+          EDITION="${{ github.event.inputs.edition || 'server' }}"
+          echo "edition=${EDITION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            live-build \
+            debootstrap \
+            squashfs-tools \
+            xorriso \
+            grub-pc-bin \
+            grub-efi-amd64-bin \
+            mtools \
+            dosfstools \
+            debian-archive-keyring
+
+      - name: Build ISO
+        run: |
+          sudo CLEAN=true ./build.sh ${{ steps.edition.outputs.edition }}
+
+      - name: Prepare release assets
+        id: prep
+        run: |
+          source config/distro.conf
+          EDITION="${{ steps.edition.outputs.edition }}"
+          ISO_FILE=$(find build/ -name '*.iso' -type f | head -1)
+          if [ -z "$ISO_FILE" ]; then
+            echo "ERROR: No ISO found in build/"
+            ls -laR build/ || true
+            exit 1
+          fi
+          ISO_NAME="mycloverOS-${DISTRO_VERSION}-${EDITION}-amd64.iso"
+          cp "$ISO_FILE" "build/${ISO_NAME}"
+          cd build
+          sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
+          md5sum "${ISO_NAME}" > "${ISO_NAME}.md5"
+          ISO_SIZE=$(du -h "${ISO_NAME}" | cut -f1)
+          echo "iso_name=${ISO_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${DISTRO_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "codename=${DISTRO_CODENAME}" >> "$GITHUB_OUTPUT"
+          echo "iso_size=${ISO_SIZE}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mycloverOS-${{ steps.edition.outputs.edition }}-iso
+          path: |
+            build/${{ steps.prep.outputs.iso_name }}
+            build/${{ steps.prep.outputs.iso_name }}.sha256
+            build/${{ steps.prep.outputs.iso_name }}.md5
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', steps.prep.outputs.version, github.run_number) }}
+          name: "mycloverOS ${{ steps.prep.outputs.version }} (${{ steps.prep.outputs.codename }}) — ${{ steps.edition.outputs.edition }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 🍀 mycloverOS ${{ steps.prep.outputs.version }} (${{ steps.prep.outputs.codename }}) — ${{ steps.edition.outputs.edition }} edition
+
+            **Download the ISO below** and flash it to a USB drive or mount it in a VM.
+
+            ### Quick Start
+            ```bash
+            # Write to USB (replace /dev/sdX with your USB device)
+            sudo dd if=${{ steps.prep.outputs.iso_name }} of=/dev/sdX bs=4M status=progress
+
+            # Or use balenaEtcher / Rufus for a GUI option
+            ```
+
+            ### What's Included
+            - 🖥️ Debian Bookworm base (stable, secure, minimal)
+            - 🐳 Docker CE + Compose v2 (containerized everything)
+            - 🤖 Ollama AI engine (local LLM inference)
+            - 🔒 WireGuard VPN mesh networking
+            - 📦 CloverStack modules (NetMon, SentryLog, Vault, Chappie)
+            - 🛒 CloverMarket on-device app marketplace
+            - 💾 CloverNAS (ZFS storage, SMB/NFS/iSCSI)
+            - 🚀 CloverDeploy (container & VM orchestration)
+            - 🔗 CloverMesh (HA clustering & failover)
+            - 🌐 First-boot setup wizard (web UI on port 8080)
+
+            ### System Requirements
+            | | Minimum | Recommended |
+            |---|---|---|
+            | CPU | 2 cores x86_64 | 4+ cores |
+            | RAM | 4 GB | 8+ GB |
+            | Disk | 32 GB | 128+ GB (SSD) |
+            | GPU | — | NVIDIA (for AI acceleration) |
+
+            **ISO Size:** ${{ steps.prep.outputs.iso_size }}
+
+            ---
+            _Your Data. Your Metal. Your Rules._ 🍀
+          files: |
+            build/${{ steps.prep.outputs.iso_name }}
+            build/${{ steps.prep.outputs.iso_name }}.sha256
+            build/${{ steps.prep.outputs.iso_name }}.md5
