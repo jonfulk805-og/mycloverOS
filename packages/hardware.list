@@ -13,20 +13,20 @@ firmware-linux-free
 
 # --- Storage controllers ---
 mdadm
-multipath-tools
+# multipath-tools  # trimmed: install on demand
 sg3-utils
 hdparm
 sdparm
 
 # --- USB ---
 usbutils
-usb-modeswitch
-usb-modeswitch-data
+# usb-modeswitch  # trimmed: install on demand
+# usb-modeswitch-data  # trimmed: install on demand
 
 # --- Serial / industrial ---
-picocom
-minicom
-setserial
+# picocom  # trimmed: install on demand
+# minicom  # trimmed: install on demand
+# setserial  # trimmed: install on demand
 
 # --- Sensors ---
 lm-sensors
@@ -34,7 +34,7 @@ fancontrol
 
 # --- IPMI / BMC ---
 ipmitool
-freeipmi-tools
+# freeipmi-tools  # trimmed: install on demand
 
 # --- EFI ---
 efibootmgr
