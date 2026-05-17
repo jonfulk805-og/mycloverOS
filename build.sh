@@ -83,19 +83,39 @@ LB_ARGS=(
     --linux-packages "linux-image"
     --linux-flavours "amd64"
     --apt-indices false
-    --bootloaders grub-efi
-    --initramfs live-boot
-    --initsystem systemd
 )
+
+# --- Version-adaptive flags --------------------------------------------------
+# live-build flag names and availability differ across versions:
+#   Ubuntu 22.04/24.04 ships live-build 3.x (many flags missing)
+#   Debian Bookworm ships live-build 5.x  (has --bootloaders, --initramfs, etc.)
+LB_HELP=$(lb config --help 2>&1 || true)
+
+# Bootloader selection
+if echo "${LB_HELP}" | grep -q -- '--bootloaders'; then
+    LB_ARGS+=(--bootloaders grub-efi)
+elif echo "${LB_HELP}" | grep -q -- '--bootloader'; then
+    LB_ARGS+=(--bootloader grub-efi)
+else
+    warn "No --bootloaders flag detected (live-build 3.x?) -- using defaults"
+fi
+
+# Init system
+if echo "${LB_HELP}" | grep -q -- '--initramfs'; then
+    LB_ARGS+=(--initramfs live-boot)
+fi
+if echo "${LB_HELP}" | grep -q -- '--initsystem'; then
+    LB_ARGS+=(--initsystem systemd)
+fi
 
 # These flags exist in live-build 4.x (Debian Bullseye and older) but were
 # removed in 5.x+ (Debian Bookworm / Ubuntu 24.04+)
-if lb config --help 2>&1 | grep -q -- '--updates'; then
+if echo "${LB_HELP}" | grep -q -- '--updates'; then
     LB_ARGS+=(--security true --updates true --backports false)
 fi
 
 # Firmware flags changed across versions
-if lb config --help 2>&1 | grep -q -- '--firmware-binary'; then
+if echo "${LB_HELP}" | grep -q -- '--firmware-binary'; then
     LB_ARGS+=(--firmware-binary true --firmware-chroot true)
 fi
 
