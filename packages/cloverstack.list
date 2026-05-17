@@ -41,8 +41,8 @@ snmpd
 apt-transport-https
 
 # --- Build essentials (for compiling modules) ---
-build-essential
-pkg-config
-libssl-dev
-libffi-dev
-python3-dev
+# build-essential  # trimmed: dev tools, install on demand
+# pkg-config  # trimmed: dev tools, install on demand
+# libssl-dev  # trimmed: dev tools, install on demand
+# libffi-dev  # trimmed: dev tools, install on demand
+# python3-dev  # trimmed: dev tools, install on demand
