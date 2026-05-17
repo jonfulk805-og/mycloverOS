@@ -141,6 +141,7 @@ All modules are pre-installed and managed via `cloverstack-ctl`:
 | SentryLog | Log management (Graylog + Wazuh) |
 | MyCloverVault | Password manager (Vaultwarden) |
 | Chappie AI | Built-in AI assistant (Ollama) |
+| **CloverMarket** | **On-device app marketplace with themes & startup wizards** |
 | CloverMedia | Smart TV + streaming + DJ |
 | CloverSign | Digital signage |
 | CloverGuard | Web proxy + content filter |
@@ -162,7 +163,14 @@ sudo cloverstack-ctl disable clovermedia
 
 # Check status
 sudo cloverstack-ctl status
+
+# CloverMarket: browse & install apps
+clovermarket-ctl browse
+clovermarket-ctl install <app-id>
+clovermarket-ctl theme apply midnight
 ```
+
+See [docs/CLOVERMARKET.md](docs/CLOVERMARKET.md) for the full CloverMarket guide.
 
 ## Contributing
 
