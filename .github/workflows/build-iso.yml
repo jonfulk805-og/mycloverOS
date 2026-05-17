@@ -63,7 +63,8 @@ jobs:
             grub-efi-amd64-bin \
             mtools \
             dosfstools \
-            debian-archive-keyring
+            debian-archive-keyring \
+            zstd
 
       - name: Build ISO
         run: |
@@ -74,22 +75,29 @@ jobs:
         run: |
           . config/distro.conf
           EDITION="${{ steps.edition.outputs.edition }}"
-          ISO_FILE=$(find build/ -name '*.iso' -type f | head -1)
+          ISO_FILE=$(find build/ -name '*.iso' -not -name '*.iso.*' -type f | head -1)
           if [ -z "$ISO_FILE" ]; then
             echo "ERROR: No ISO found in build/"
             ls -laR build/ || true
             exit 1
           fi
           ISO_NAME="mycloverOS-${DISTRO_VERSION}-${EDITION}-amd64.iso"
-          cp "$ISO_FILE" "build/${ISO_NAME}"
+          if [ "$(basename "$ISO_FILE")" != "${ISO_NAME}" ]; then
+            cp "$ISO_FILE" "build/${ISO_NAME}"
+          fi
           cd build
           sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
           md5sum "${ISO_NAME}" > "${ISO_NAME}.md5"
           ISO_SIZE=$(du -h "${ISO_NAME}" | cut -f1)
+          # Compress with zstd for GitHub Release (2 GB asset limit)
+          zstd -T0 -10 "${ISO_NAME}" -o "${ISO_NAME}.zst"
+          sha256sum "${ISO_NAME}.zst" > "${ISO_NAME}.zst.sha256"
+          ZST_SIZE=$(du -h "${ISO_NAME}.zst" | cut -f1)
           echo "iso_name=${ISO_NAME}" >> "$GITHUB_OUTPUT"
           echo "version=${DISTRO_VERSION}" >> "$GITHUB_OUTPUT"
           echo "codename=${DISTRO_CODENAME}" >> "$GITHUB_OUTPUT"
           echo "iso_size=${ISO_SIZE}" >> "$GITHUB_OUTPUT"
+          echo "zst_size=${ZST_SIZE}" >> "$GITHUB_OUTPUT"
 
       - name: Upload ISO as artifact
         uses: actions/upload-artifact@v4
@@ -113,14 +121,17 @@ jobs:
           body: |
             ## 🍀 mycloverOS ${{ steps.prep.outputs.version }} (${{ steps.prep.outputs.codename }}) — ${{ steps.edition.outputs.edition }} edition
 
-            **Download the ISO below** and flash it to a USB drive or mount it in a VM.
+            **Download the compressed ISO below**, decompress, and flash to USB or mount in a VM.
 
             ### Quick Start
             ```bash
-            # Write to USB (replace /dev/sdX with your USB device)
-            sudo dd if=${{ steps.prep.outputs.iso_name }} of=/dev/sdX bs=4M status=progress
+            # Decompress the ISO
+            zstd -d mycloverOS-${{ steps.prep.outputs.version }}-${{ steps.edition.outputs.edition }}-amd64.iso.zst
 
-            # Or use balenaEtcher / Rufus for a GUI option
+            # Write to USB (replace /dev/sdX with your USB device)
+            sudo dd if=mycloverOS-${{ steps.prep.outputs.version }}-${{ steps.edition.outputs.edition }}-amd64.iso of=/dev/sdX bs=4M status=progress
+
+            # Or use balenaEtcher / Rufus for a GUI option (after decompressing)
             ```
 
             ### What's Included
@@ -130,9 +141,7 @@ jobs:
             - 🔒 WireGuard VPN mesh networking
             - 📦 CloverStack modules (NetMon, SentryLog, Vault, Chappie)
             - 🛒 CloverMarket on-device app marketplace
-            - 💾 CloverNAS (ZFS storage, SMB/NFS/iSCSI)
-            - 🚀 CloverDeploy (container & VM orchestration)
-            - 🔗 CloverMesh (HA clustering & failover)
+            - 💾 CloverNAS (ZFS storage, SMB/NFS)
             - 🌐 First-boot setup wizard (web UI on port 8080)
 
             ### System Requirements
@@ -143,11 +152,12 @@ jobs:
             | Disk | 32 GB | 128+ GB (SSD) |
             | GPU | — | NVIDIA (for AI acceleration) |
 
-            **ISO Size:** ${{ steps.prep.outputs.iso_size }}
+            **ISO Size:** ${{ steps.prep.outputs.iso_size }} (compressed: ${{ steps.prep.outputs.zst_size }})
 
             ---
             _Your Data. Your Metal. Your Rules._ 🍀
           files: |
-            build/${{ steps.prep.outputs.iso_name }}
+            build/${{ steps.prep.outputs.iso_name }}.zst
+            build/${{ steps.prep.outputs.iso_name }}.zst.sha256
             build/${{ steps.prep.outputs.iso_name }}.sha256
             build/${{ steps.prep.outputs.iso_name }}.md5
