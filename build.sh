@@ -220,7 +220,7 @@ lb build 2>&1 | tee "${SCRIPT_DIR}/${BUILD_DIR}/build-${EDITION}.log"
 # --- Output ------------------------------------------------------------------
 ISO_PATH=$(find . -maxdepth 1 -name "*.iso" -type f | head -1)
 if [[ -n "${ISO_PATH}" ]]; then
-    FINAL_ISO="${SCRIPT_DIR}/${BUILD_DIR}/mycloverOS-${DISTRO_VERSION}-${EDITION}-${BASE_ARCH}.iso"
+    FINAL_ISO="${SCRIPT_DIR}/${BUILD_DIR}/$(basename "${ISO_PATH}")"
     mv "${ISO_PATH}" "${FINAL_ISO}"
     ISO_SIZE=$(du -h "${FINAL_ISO}" | cut -f1)
     ISO_SHA=$(sha256sum "${FINAL_ISO}" | cut -d' ' -f1)
