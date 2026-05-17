@@ -1,0 +1,32 @@
+services:
+  clovermarket:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clovermarket
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - /opt/clovermarket:/opt/clovermarket
+      - /opt/cloverstack/themes:/opt/cloverstack/themes
+      - /etc/myclover/themes:/etc/myclover/themes
+      - /var/lib/clovermarket:/var/lib/clovermarket
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CLOVERMARKET_PORT=8090
+      - CLOVERMARKET_APPS=/opt/clovermarket/apps
+      - CLOVERMARKET_THEMES=/opt/cloverstack/themes
+      - CLOVERMARKET_WALLET=/var/lib/clovermarket/wallet.json
+      - CLOVERMARKET_REGISTRY_URL=https://market.myclover.tech/api/v1
+    networks:
+      - cloverstack
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.clovermarket.rule=Host(`market.local`) || PathPrefix(`/market`)"
+      - "traefik.http.routers.clovermarket.entrypoints=web"
+      - "traefik.http.services.clovermarket.loadbalancer.server.port=8090"
+
+networks:
+  cloverstack:
+    external: true
