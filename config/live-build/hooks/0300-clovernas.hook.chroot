@@ -1,0 +1,352 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- CloverNAS + CloverDeploy + CloverMesh setup
+# Installs ZFS from contrib, creates NAS directory structure, sets up
+# CloverMesh clustering infrastructure, and deploys management scripts.
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Running CloverNAS chroot hook..."
+
+# =============================================================================
+# 1. INSTALL ZFS FROM DEBIAN CONTRIB
+# =============================================================================
+echo "[clovernas] Installing OpenZFS..."
+
+# Add contrib + backports for ZFS packages
+if ! grep -q "contrib" /etc/apt/sources.list 2>/dev/null; then
+    sed -i 's/main$/main contrib/' /etc/apt/sources.list
+fi
+
+# Add backports for latest ZFS
+cat > /etc/apt/sources.list.d/bookworm-backports.list <<'BKPT'
+deb http://deb.debian.org/debian bookworm-backports main contrib
+BKPT
+
+apt-get update
+
+# Install ZFS kernel headers + packages
+# Use dkms so ZFS module builds for the running kernel
+apt-get install -y --no-install-recommends \
+    linux-headers-amd64 \
+    zfsutils-linux \
+    zfs-dkms \
+    zfs-zed \
+    || echo "[clovernas] WARNING: ZFS install failed (may need kernel headers at boot)"
+
+# Enable ZFS services
+systemctl enable zfs-import-cache.service 2>/dev/null || true
+systemctl enable zfs-import-scan.service 2>/dev/null || true
+systemctl enable zfs-mount.service 2>/dev/null || true
+systemctl enable zfs-share.service 2>/dev/null || true
+systemctl enable zfs.target 2>/dev/null || true
+systemctl enable zfs-zed.service 2>/dev/null || true
+
+echo "[clovernas] ZFS install complete"
+
+# =============================================================================
+# 2. CLOVERNAS DIRECTORY STRUCTURE
+# =============================================================================
+echo "[clovernas] Creating CloverNAS directory structure..."
+
+mkdir -p /opt/cloverstack/clovernas/{config,scripts,shares}
+mkdir -p /opt/cloverstack/cloverdeploy/{catalog,templates,compose}
+mkdir -p /opt/cloverstack/clovermesh/{config,scripts,keys}
+mkdir -p /var/lib/clovernas/{snapshots,replication}
+mkdir -p /var/lib/cloverdeploy/{vms,isos,templates}
+mkdir -p /var/lib/clovermesh/{state,drbd}
+mkdir -p /var/log/clovernas
+mkdir -p /var/log/cloverdeploy
+mkdir -p /var/log/clovermesh
+mkdir -p /etc/myclover/clovernas.d
+mkdir -p /etc/myclover/clovermesh.d
+
+# =============================================================================
+# 3. DEFAULT NAS CONFIGURATION
+# =============================================================================
+echo "[clovernas] Writing default NAS configuration..."
+
+cat > /etc/myclover/clovernas.d/defaults.conf <<'NASCONF'
+# =============================================================================
+# CloverNAS Default Configuration
+# =============================================================================
+
+# ZFS Defaults
+ZFS_ARC_MAX_PERCENT=50          # Max ARC size as % of RAM
+ZFS_COMPRESSION=lz4             # Default compression algorithm
+ZFS_ATIME=off                   # Disable access time updates (performance)
+ZFS_DEDUP=off                   # Off by default (RAM hungry)
+ZFS_RECORD_SIZE=128K            # Default record size
+ZFS_SNAPSHOT_RETENTION=30       # Days to keep auto-snapshots
+ZFS_SNAPSHOT_INTERVAL=hourly    # Auto-snapshot frequency
+
+# SMB Defaults
+SMB_WORKGROUP="CLOVER"
+SMB_SERVER_STRING="CloverNAS"
+SMB_MIN_PROTOCOL="SMB2"
+SMB_MAX_PROTOCOL="SMB3"
+
+# NFS Defaults
+NFS_VERSION=4
+NFS_THREADS=8
+
+# iSCSI Defaults
+ISCSI_TARGET_PREFIX="iqn.2025.tech.myclover"
+
+# S.M.A.R.T. Monitoring
+SMART_CHECK_INTERVAL=1800       # Seconds between checks
+SMART_TEMP_WARN=45              # Celsius
+SMART_TEMP_CRIT=55              # Celsius
+
+# Ransomware Protection
+IMMUTABLE_SNAPSHOT_ENABLED=true
+IMMUTABLE_SNAPSHOT_RETENTION=90  # Days (cannot be deleted even by root)
+NASCONF
+
+# =============================================================================
+# 4. CLOVERDEPLOY CONFIGURATION
+# =============================================================================
+echo "[clovernas] Writing CloverDeploy configuration..."
+
+cat > /etc/myclover/clovernas.d/cloverdeploy.conf <<'DEPLOYCONF'
+# =============================================================================
+# CloverDeploy Default Configuration
+# =============================================================================
+
+# Container runtime
+CONTAINER_RUNTIME="docker"
+CONTAINER_DATA_DIR="/opt/cloverstack/cloverdeploy"
+COMPOSE_VERSION="v2"
+
+# VM hypervisor
+VM_HYPERVISOR="kvm"
+VM_STORAGE_DIR="/var/lib/cloverdeploy/vms"
+VM_ISO_DIR="/var/lib/cloverdeploy/isos"
+VM_DEFAULT_RAM=2048             # MB
+VM_DEFAULT_VCPUS=2
+VM_DEFAULT_DISK=20              # GB
+
+# GPU passthrough
+GPU_PASSTHROUGH_ENABLED=false   # Enable via setup wizard
+IOMMU_ENABLED=false             # Requires BIOS VT-d
+
+# noVNC console
+NOVNC_PORT=6080
+NOVNC_SSL=true
+
+# App catalog source
+CATALOG_URL="https://market.myclover.tech/api/v1/catalog"
+CATALOG_CACHE_TTL=3600          # Seconds
+DEPLOYCONF
+
+# =============================================================================
+# 5. CLOVERMESH CLUSTER CONFIGURATION
+# =============================================================================
+echo "[clovernas] Writing CloverMesh cluster configuration..."
+
+cat > /etc/myclover/clovermesh.d/defaults.conf <<'MESHCONF'
+# =============================================================================
+# CloverMesh Cluster Default Configuration
+# =============================================================================
+
+# Cluster identity (set by `cloverstack-ctl mesh init`)
+MESH_CLUSTER_NAME=""
+MESH_NODE_NAME=""
+MESH_NODE_ROLE=""               # primary | replica | witness | cloud
+
+# Network
+MESH_TRANSPORT="wireguard"      # wireguard | direct
+MESH_HEARTBEAT_INTERVAL=2000    # ms
+MESH_HEARTBEAT_TIMEOUT=6000     # ms (3 missed = dead)
+MESH_VIP_ENABLED=true
+MESH_VIP_ADDRESS=""             # Set during init
+
+# Quorum
+MESH_QUORUM_PROVIDER="corosync"
+MESH_QUORUM_VOTES=1             # Votes per node
+MESH_QUORUM_EXPECTED=""         # Set during init (auto = node count)
+
+# Replication — DRBD (synchronous)
+DRBD_SYNC_RATE="100M"          # Max sync speed (bytes/sec)
+DRBD_PROTOCOL="C"              # A=async, B=semi, C=sync
+DRBD_VERIFY_ALG="sha256"
+DRBD_CSUMS_ALG="sha256"
+
+# Replication — ZFS (asynchronous)
+ZFS_REPL_INTERVAL=60            # Seconds between incremental sends
+ZFS_REPL_CLOUD_INTERVAL=900     # Seconds for cloud target
+ZFS_REPL_COMPRESSION=lz4        # Compress send stream
+
+# Failover
+FAILOVER_AUTO=true
+FAILOVER_CLOUD_ENABLED=false
+FAILOVER_DNS_PROVIDER=""        # cloudflare | route53 | manual
+FAILOVER_DNS_DOMAIN=""
+FAILOVER_CLOUD_PROVIDER=""      # hetzner | oracle | linode | custom
+
+# Fencing
+FENCE_METHOD="ssh"              # ssh | ipmi | cloud-api
+FENCE_TIMEOUT=10                # Seconds
+MESHCONF
+
+# =============================================================================
+# 6. CONFIGURE SERVICES
+# =============================================================================
+echo "[clovernas] Enabling NAS services..."
+
+# Enable SMB
+systemctl enable smbd 2>/dev/null || true
+systemctl enable nmbd 2>/dev/null || true
+
+# Enable NFS (but don't start until configured)
+systemctl enable nfs-kernel-server 2>/dev/null || true
+
+# Enable iSCSI target
+systemctl enable tgt 2>/dev/null || true
+
+# Enable S.M.A.R.T. monitoring
+systemctl enable smartd 2>/dev/null || true
+
+# Enable libvirt (VMs)
+systemctl enable libvirtd 2>/dev/null || true
+
+# Enable cluster services (but don't start until mesh init)
+systemctl disable corosync 2>/dev/null || true
+systemctl disable pacemaker 2>/dev/null || true
+systemctl disable keepalived 2>/dev/null || true
+
+# Set up ZFS Event Daemon alerts
+mkdir -p /etc/zfs/zed.d
+cat > /etc/zfs/zed.d/zed.rc <<'ZEDRC'
+ZED_DEBUG_LOG="/var/log/clovernas/zed-debug.log"
+ZED_EMAIL_ADDR="root"
+ZED_NOTIFY_INTERVAL_SECS=3600
+ZED_USE_ENCLOSURE_LEDS=1
+ZED_SCRUB_AFTER_RESILVER=1
+ZEDRC
+
+# =============================================================================
+# 7. LIBVIRT DEFAULT STORAGE POOL
+# =============================================================================
+echo "[clovernas] Configuring libvirt defaults..."
+
+mkdir -p /etc/libvirt/storage
+cat > /etc/libvirt/storage/cloverdeploy.xml <<'VIRTSTORAGE'
+<pool type='dir'>
+  <name>cloverdeploy</name>
+  <target>
+    <path>/var/lib/cloverdeploy/vms</path>
+  </target>
+</pool>
+VIRTSTORAGE
+
+# =============================================================================
+# 8. GRUB IOMMU PREPARATION
+# =============================================================================
+echo "[clovernas] Preparing GRUB for GPU passthrough (IOMMU)..."
+
+# Add iommu flags to GRUB defaults (user enables in BIOS + setup wizard)
+if ! grep -q "iommu" /etc/default/grub 2>/dev/null; then
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 intel_iommu=on amd_iommu=on iommu=pt"/' /etc/default/grub
+fi
+
+# =============================================================================
+# 9. CLOVERDEPLOY APP CATALOG (Built-in Apps)
+# =============================================================================
+echo "[clovernas] Installing CloverDeploy app catalog..."
+
+mkdir -p /opt/cloverstack/cloverdeploy/catalog
+
+cat > /opt/cloverstack/cloverdeploy/catalog/manifest.json <<'CATALOG'
+{
+  "version": "1.0.0",
+  "updated": "2025-01-01T00:00:00Z",
+  "categories": [
+    {
+      "name": "Productivity",
+      "apps": [
+        {"id": "nextcloud", "name": "Nextcloud", "desc": "File sync, calendar, contacts", "image": "nextcloud:latest", "ports": [8080], "ha": true},
+        {"id": "onlyoffice", "name": "OnlyOffice", "desc": "Document editor suite", "image": "onlyoffice/documentserver:latest", "ports": [8081], "ha": false},
+        {"id": "vaultwarden", "name": "Vaultwarden", "desc": "Password manager (Bitwarden compatible)", "image": "vaultwarden/server:latest", "ports": [8082], "ha": true},
+        {"id": "bookstack", "name": "BookStack", "desc": "Wiki & documentation", "image": "lscr.io/linuxserver/bookstack:latest", "ports": [8083], "ha": false}
+      ]
+    },
+    {
+      "name": "Media",
+      "apps": [
+        {"id": "plex", "name": "Plex", "desc": "Media server", "image": "plexinc/pms-docker:latest", "ports": [32400], "ha": false},
+        {"id": "jellyfin", "name": "Jellyfin", "desc": "Free media server", "image": "jellyfin/jellyfin:latest", "ports": [8096], "ha": false},
+        {"id": "photoprism", "name": "PhotoPrism", "desc": "AI-powered photo management", "image": "photoprism/photoprism:latest", "ports": [2342], "ha": false}
+      ]
+    },
+    {
+      "name": "Networking",
+      "apps": [
+        {"id": "pihole", "name": "Pi-hole", "desc": "DNS-level ad blocking", "image": "pihole/pihole:latest", "ports": [53, 8084], "ha": true},
+        {"id": "traefik", "name": "Traefik", "desc": "Reverse proxy + SSL", "image": "traefik:latest", "ports": [80, 443, 8085], "ha": true},
+        {"id": "wireguard-ui", "name": "WireGuard UI", "desc": "VPN management", "image": "ngoduykhanh/wireguard-ui:latest", "ports": [5000], "ha": false},
+        {"id": "tailscale", "name": "Tailscale", "desc": "Zero-config VPN mesh", "image": "tailscale/tailscale:latest", "ports": [], "ha": false}
+      ]
+    },
+    {
+      "name": "Databases",
+      "apps": [
+        {"id": "postgresql", "name": "PostgreSQL", "desc": "Advanced relational database", "image": "postgres:16", "ports": [5432], "ha": true},
+        {"id": "mariadb", "name": "MariaDB", "desc": "MySQL-compatible database", "image": "mariadb:latest", "ports": [3306], "ha": true},
+        {"id": "redis", "name": "Redis", "desc": "In-memory data store", "image": "redis:latest", "ports": [6379], "ha": true},
+        {"id": "mongodb", "name": "MongoDB", "desc": "Document database", "image": "mongo:latest", "ports": [27017], "ha": false}
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "apps": [
+        {"id": "grafana", "name": "Grafana", "desc": "Dashboards & visualization", "image": "grafana/grafana:latest", "ports": [3000], "ha": false},
+        {"id": "prometheus", "name": "Prometheus", "desc": "Metrics collection", "image": "prom/prometheus:latest", "ports": [9090], "ha": false},
+        {"id": "uptime-kuma", "name": "Uptime Kuma", "desc": "Uptime monitoring", "image": "louislam/uptime-kuma:latest", "ports": [3001], "ha": true},
+        {"id": "portainer", "name": "Portainer", "desc": "Docker management UI", "image": "portainer/portainer-ce:latest", "ports": [9000], "ha": false}
+      ]
+    },
+    {
+      "name": "Security",
+      "apps": [
+        {"id": "crowdsec", "name": "CrowdSec", "desc": "Collaborative IPS", "image": "crowdsecurity/crowdsec:latest", "ports": [8086], "ha": true},
+        {"id": "authentik", "name": "Authentik", "desc": "Identity provider (SSO/LDAP)", "image": "ghcr.io/goauthentik/server:latest", "ports": [9443], "ha": true}
+      ]
+    },
+    {
+      "name": "Home Automation",
+      "apps": [
+        {"id": "homeassistant", "name": "Home Assistant", "desc": "Smart home control", "image": "ghcr.io/home-assistant/home-assistant:stable", "ports": [8123], "ha": false},
+        {"id": "mqtt", "name": "Mosquitto MQTT", "desc": "IoT message broker", "image": "eclipse-mosquitto:latest", "ports": [1883], "ha": true},
+        {"id": "nodered", "name": "Node-RED", "desc": "Flow-based automation", "image": "nodered/node-red:latest", "ports": [1880], "ha": false}
+      ]
+    },
+    {
+      "name": "Development",
+      "apps": [
+        {"id": "gitea", "name": "Gitea", "desc": "Self-hosted Git", "image": "gitea/gitea:latest", "ports": [3002], "ha": true},
+        {"id": "codeserver", "name": "Code Server", "desc": "VS Code in the browser", "image": "lscr.io/linuxserver/code-server:latest", "ports": [8443], "ha": false},
+        {"id": "drone", "name": "Drone CI", "desc": "Continuous integration", "image": "drone/drone:latest", "ports": [8087], "ha": false}
+      ]
+    },
+    {
+      "name": "AI / Machine Learning",
+      "apps": [
+        {"id": "ollama", "name": "Ollama", "desc": "Local LLM inference", "image": "ollama/ollama:latest", "ports": [11434], "ha": false},
+        {"id": "openwebui", "name": "Open WebUI", "desc": "ChatGPT-like interface for Ollama", "image": "ghcr.io/open-webui/open-webui:main", "ports": [3003], "ha": false},
+        {"id": "localai", "name": "LocalAI", "desc": "OpenAI-compatible local API", "image": "localai/localai:latest", "ports": [8088], "ha": false}
+      ]
+    },
+    {
+      "name": "Object Storage",
+      "apps": [
+        {"id": "minio", "name": "MinIO", "desc": "S3-compatible object storage", "image": "minio/minio:latest", "ports": [9001, 9002], "ha": true}
+      ]
+    }
+  ]
+}
+CATALOG
+
+echo "[clovernas] CloverNAS chroot hook complete"
+echo "[clovernas] Packages installed, directories created, services configured"
+echo "[clovernas] ZFS, SMB, NFS, iSCSI, KVM, DRBD, Corosync/Pacemaker ready"

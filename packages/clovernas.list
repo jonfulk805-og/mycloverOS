@@ -1,0 +1,63 @@
+# =============================================================================
+# mycloverOS CloverNAS + CloverDeploy + CloverMesh Packages
+# Storage, container/VM orchestration, and high-availability clustering
+# =============================================================================
+
+# --- ZFS (OpenZFS) ---
+# ZFS is built from dkms source during hook because Debian bookworm's
+# stock zfs packages live in contrib; the hook adds the repo and installs.
+# See: 0300-clovernas.hook.chroot
+
+# --- NAS protocol daemons ---
+samba                          # SMB/CIFS file sharing
+samba-common-bin
+nfs-kernel-server              # NFS v3/v4
+nfs-common
+tgt                            # iSCSI target (LIO alternative)
+open-iscsi                     # iSCSI initiator (for cluster replication)
+proftpd-basic                  # FTP/SFTP
+vsftpd                         # Alternative FTP (lightweight)
+
+# --- S.M.A.R.T. disk monitoring ---
+smartmontools
+
+# --- Virtual machine support (KVM/QEMU) ---
+qemu-system-x86
+qemu-utils
+libvirt-daemon-system
+libvirt-clients
+virtinst
+ovmf                          # UEFI firmware for VMs
+
+# --- VM console access ---
+# noVNC is deployed via Docker container (see CloverDeploy catalog)
+
+# --- Cluster / High-Availability (CloverMesh) ---
+corosync                       # Cluster messaging + quorum
+pacemaker                      # Cluster resource manager
+pcs                            # Pacemaker/Corosync CLI
+crmsh                          # Cluster resource shell
+fence-agents                   # Fencing agents (IPMI, SSH, etc.)
+resource-agents                # HA resource agents
+drbd-utils                     # DRBD 9 block-level replication
+keepalived                     # Virtual IP (VIP) failover
+
+# --- Advanced networking for clusters ---
+frr                            # FRRouting (OSPF/BGP for MAN clusters)
+openvswitch-switch             # Open vSwitch (SDN for datacenter tier)
+
+# --- Backup ---
+# restic already in cloverstack.list
+
+# --- MinIO (S3-compatible object storage) ---
+# Deployed via Docker container (see CloverDeploy catalog)
+
+# --- Misc storage utilities ---
+parted
+gdisk
+lsscsi
+nvme-cli                       # NVMe drive management
+fio                            # Disk benchmarking
+bonnie++                       # Filesystem benchmarking
+zstd                           # Compression (ZFS default)
+lz4                            # Fast compression (ZFS L2ARC)

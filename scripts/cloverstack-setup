@@ -14,9 +14,14 @@ err() { echo "[cloverstack] ERROR: $*" >&2; }
 
 usage() {
     cat <<EOF
-Usage: cloverstack-ctl <command> [module]
+Usage: cloverstack-ctl <command> [module|subcommand]
 
-Commands:
+Platform Commands:
+  storage <subcommand>    CloverNAS storage management (ZFS, shares, disks)
+  deploy <subcommand>     CloverDeploy container & VM orchestration
+  mesh <subcommand>       CloverMesh cluster management ("Fail to Anywhere")
+
+Module Commands:
   status              Show status of all modules
   enable <module>     Enable a module
   disable <module>    Disable a module
@@ -43,6 +48,12 @@ Modules:
   clovermesh          Distributed mesh
   clovermesh-radio    LoRa mesh comms
   streamserver        Live streaming platform
+
+Examples:
+  cloverstack-ctl storage pool create tank mirror /dev/sda /dev/sdb
+  cloverstack-ctl deploy install nextcloud --ha
+  cloverstack-ctl mesh init --name my-cluster --node-ip 192.168.1.10
+  cloverstack-ctl mesh status
 
 EOF
 }
@@ -149,6 +160,11 @@ cmd_list() {
     echo "  clovermesh-radio  LoRa mesh comms"
     echo "  streamserver      Live streaming platform"
     echo ""
+    echo "Platform (use as subcommands):"
+    echo "  storage           CloverNAS storage management (ZFS, NAS, disks)"
+    echo "  deploy            CloverDeploy container & VM orchestration"
+    echo "  mesh              CloverMesh HA cluster management"
+    echo ""
 }
 
 # --- Symlink: cloverstack-ctl -> cloverstack-setup ---------------------------
@@ -157,6 +173,11 @@ COMMAND="${1:-}"
 MODULE="${2:-}"
 
 case "${COMMAND}" in
+    # Platform subcommands — delegate to dedicated scripts
+    storage)    exec /usr/local/bin/clovernas "${MODULE}" "$@" ;;
+    deploy)     exec /usr/local/bin/cloverdeploy "${MODULE}" "$@" ;;
+    mesh)       exec /usr/local/bin/clovermesh "${MODULE}" "$@" ;;
+    # Module management
     status)     cmd_status ;;
     enable)     [[ -n "${MODULE}" ]] && cmd_enable "${MODULE}" || usage ;;
     disable)    [[ -n "${MODULE}" ]] && cmd_disable "${MODULE}" || usage ;;

@@ -130,6 +130,11 @@ cp "${SCRIPT_DIR}/packages/cloverstack.list" config/package-lists/cloverstack.li
 cp "${SCRIPT_DIR}/packages/networking.list" config/package-lists/networking.list.chroot
 cp "${SCRIPT_DIR}/packages/hardware.list" config/package-lists/hardware.list.chroot
 
+# CloverNAS + CloverDeploy + CloverMesh (storage, containers, VMs, clustering)
+if [[ -f "${SCRIPT_DIR}/packages/clovernas.list" ]]; then
+    cp "${SCRIPT_DIR}/packages/clovernas.list" config/package-lists/clovernas.list.chroot
+fi
+
 # --- Copy filesystem overlay -------------------------------------------------
 log "Installing filesystem overlay..."
 if [[ -d "${SCRIPT_DIR}/overlay" ]]; then
@@ -167,6 +172,14 @@ chmod +x config/includes.chroot/usr/local/bin/myclover-*
 chmod +x config/includes.chroot/usr/local/bin/cloverstack-*
 chmod +x config/includes.chroot/usr/local/bin/clovermarket 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/cloverapp-picker 2>/dev/null || true
+
+# CloverNAS / CloverDeploy / CloverMesh CLI scripts
+for script in clovernas cloverdeploy clovermesh; do
+    if [[ -f "${SCRIPT_DIR}/scripts/${script}" ]]; then
+        cp "${SCRIPT_DIR}/scripts/${script}" config/includes.chroot/usr/local/bin/
+        chmod +x config/includes.chroot/usr/local/bin/${script}
+    fi
+done
 
 # --- Copy preseed (automated installer answers) -----------------------------
 if [[ -d "${SCRIPT_DIR}/config/live-build/preseed" ]]; then

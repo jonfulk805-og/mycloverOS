@@ -1,0 +1,412 @@
+#!/usr/bin/env bash
+# =============================================================================
+# clovernas -- CloverNAS Storage Management CLI
+# Subcommand of cloverstack-ctl: `cloverstack-ctl storage <command>`
+# =============================================================================
+set -euo pipefail
+
+CLOVERNAS_ROOT="/opt/cloverstack/clovernas"
+CLOVERNAS_CONFIG="/etc/myclover/clovernas.d"
+CLOVERNAS_LOG="/var/log/clovernas"
+
+# Source defaults
+[[ -f "${CLOVERNAS_CONFIG}/defaults.conf" ]] && source "${CLOVERNAS_CONFIG}/defaults.conf"
+
+log() { echo "[clovernas] $*"; }
+err() { echo "[clovernas] ERROR: $*" >&2; }
+
+usage() {
+    cat <<EOF
+CloverNAS Storage Management
+Usage: cloverstack-ctl storage <command> [options]
+
+Pool Management:
+  pool create <name> <type> <devices...>   Create ZFS pool (mirror, raidz, raidz2, raidz3)
+  pool destroy <name>                      Destroy ZFS pool
+  pool status [name]                       Show pool status
+  pool scrub <name>                        Start pool scrub
+  pool import                              Scan and import available pools
+  pool export <name>                       Export pool for safe removal
+
+Dataset Management:
+  dataset create <pool/name> [options]     Create ZFS dataset
+  dataset destroy <pool/name>              Destroy ZFS dataset
+  dataset list [pool]                      List all datasets
+  dataset set <pool/name> <prop>=<val>     Set dataset property
+
+Snapshot Management:
+  snap create <dataset> [name]             Create snapshot
+  snap list [dataset]                      List snapshots
+  snap rollback <dataset@snap>             Rollback to snapshot
+  snap destroy <dataset@snap>              Destroy snapshot
+  snap schedule <dataset> <interval>       Set auto-snapshot schedule
+  snap lock <dataset@snap>                 Lock snapshot (immutable/ransomware protection)
+
+File Sharing:
+  share smb <dataset> --name <name>        Create SMB/CIFS share
+  share nfs <dataset> --network <cidr>     Create NFS export
+  share iscsi <dataset> --size <size>      Create iSCSI target (zvol)
+  share s3 --bucket <name>                 Create S3 bucket (MinIO)
+  share list                               List all shares
+  share remove <name>                      Remove share
+
+Disk Management:
+  disk list                                List all disks and their status
+  disk smart <device>                      Show S.M.A.R.T. info
+  disk test <device>                       Run S.M.A.R.T. test
+  disk benchmark <device>                  Run disk benchmark (fio)
+  disk wipe <device>                       Securely wipe disk
+
+Monitoring:
+  health                                   Overall storage health dashboard
+  alerts                                   Show active alerts
+  capacity                                 Capacity usage report
+
+EOF
+}
+
+# =============================================================================
+# POOL COMMANDS
+# =============================================================================
+
+cmd_pool_create() {
+    local name="$1"; shift
+    local type="$1"; shift
+    local devices=("$@")
+
+    if [[ ${#devices[@]} -lt 1 ]]; then
+        err "Usage: cloverstack-ctl storage pool create <name> <mirror|raidz|raidz2|raidz3|stripe> <dev1> [dev2] ..."
+        exit 1
+    fi
+
+    log "Creating ZFS pool '${name}' (${type}) with devices: ${devices[*]}"
+
+    # Set default options
+    local opts="-o ashift=12"
+    opts+=" -O compression=${ZFS_COMPRESSION:-lz4}"
+    opts+=" -O atime=${ZFS_ATIME:-off}"
+    opts+=" -O xattr=sa"
+    opts+=" -O dnodesize=auto"
+    opts+=" -O recordsize=${ZFS_RECORD_SIZE:-128K}"
+    opts+=" -O aclinherit=passthrough"
+
+    case "${type}" in
+        mirror)  zpool create ${opts} "${name}" mirror "${devices[@]}" ;;
+        raidz)   zpool create ${opts} "${name}" raidz "${devices[@]}" ;;
+        raidz2)  zpool create ${opts} "${name}" raidz2 "${devices[@]}" ;;
+        raidz3)  zpool create ${opts} "${name}" raidz3 "${devices[@]}" ;;
+        stripe)  zpool create ${opts} "${name}" "${devices[@]}" ;;
+        *)       err "Unknown pool type: ${type}. Use mirror, raidz, raidz2, raidz3, or stripe."; exit 1 ;;
+    esac
+
+    # Create default datasets
+    zfs create "${name}/data"
+    zfs create "${name}/data/files"
+    zfs create "${name}/data/databases"
+    zfs create -o recordsize=1M "${name}/data/media"
+    zfs create "${name}/backups"
+
+    # Set sync=always for databases (data integrity)
+    zfs set sync=always "${name}/data/databases"
+
+    log "Pool '${name}' created successfully"
+    zpool status "${name}"
+}
+
+cmd_pool_status() {
+    local name="${1:-}"
+    if [[ -n "${name}" ]]; then
+        zpool status "${name}"
+    else
+        zpool status
+    fi
+    echo ""
+    zpool list
+}
+
+cmd_pool_scrub() {
+    local name="$1"
+    log "Starting scrub on pool '${name}'..."
+    zpool scrub "${name}"
+    log "Scrub started. Monitor with: cloverstack-ctl storage pool status ${name}"
+}
+
+# =============================================================================
+# SNAPSHOT COMMANDS
+# =============================================================================
+
+cmd_snap_create() {
+    local dataset="$1"
+    local name="${2:-$(date +%Y%m%d-%H%M%S)}"
+    local snapname="${dataset}@${name}"
+
+    log "Creating snapshot: ${snapname}"
+    zfs snapshot "${snapname}"
+    log "Snapshot created: ${snapname}"
+}
+
+cmd_snap_list() {
+    local dataset="${1:-}"
+    if [[ -n "${dataset}" ]]; then
+        zfs list -t snapshot -r "${dataset}" -o name,used,refer,creation
+    else
+        zfs list -t snapshot -o name,used,refer,creation
+    fi
+}
+
+cmd_snap_rollback() {
+    local snapname="$1"
+    log "Rolling back to snapshot: ${snapname}"
+    echo "WARNING: This will destroy all data created after this snapshot."
+    read -p "Are you sure? (yes/no): " confirm
+    if [[ "${confirm}" == "yes" ]]; then
+        zfs rollback -r "${snapname}"
+        log "Rollback complete: ${snapname}"
+    else
+        log "Rollback cancelled"
+    fi
+}
+
+cmd_snap_lock() {
+    local snapname="$1"
+    log "Locking snapshot (immutable): ${snapname}"
+    zfs hold "ransomware-protect" "${snapname}"
+    log "Snapshot locked. Cannot be deleted until unlocked."
+    log "Unlock with: zfs release ransomware-protect ${snapname}"
+}
+
+# =============================================================================
+# SHARE COMMANDS
+# =============================================================================
+
+cmd_share_smb() {
+    local dataset="$1"; shift
+    local sharename=""
+    local ha=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) sharename="$2"; shift 2 ;;
+            --ha)   ha=true; shift ;;
+            *)      shift ;;
+        esac
+    done
+
+    sharename="${sharename:-$(basename ${dataset})}"
+
+    log "Creating SMB share '${sharename}' for dataset '${dataset}'..."
+
+    local mountpoint
+    mountpoint=$(zfs get -H -o value mountpoint "${dataset}")
+
+    # Add to Samba config
+    cat >> /etc/samba/smb.conf <<SMBSHARE
+
+[${sharename}]
+    path = ${mountpoint}
+    browseable = yes
+    read only = no
+    create mask = 0664
+    directory mask = 0775
+    vfs objects = shadow_copy2
+    shadow:snapdir = .zfs/snapshot
+    shadow:sort = desc
+    shadow:format = %Y%m%d-%H%M%S
+SMBSHARE
+
+    systemctl reload smbd 2>/dev/null || systemctl restart smbd
+
+    if [[ "${ha}" == "true" ]]; then
+        log "HA mode: Share will failover with cluster"
+        # Register with Pacemaker (if CloverMesh is active)
+        if command -v crm &>/dev/null && crm status &>/dev/null; then
+            crm configure primitive "smb-${sharename}" ocf:heartbeat:Filesystem \
+                params device="${dataset}" directory="${mountpoint}" fstype="zfs" \
+                op monitor interval="30s" timeout="60s"
+        fi
+    fi
+
+    log "SMB share '${sharename}' created at \\\\$(hostname)\\${sharename}"
+}
+
+cmd_share_nfs() {
+    local dataset="$1"; shift
+    local network="*"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --network) network="$2"; shift 2 ;;
+            *)         shift ;;
+        esac
+    done
+
+    local mountpoint
+    mountpoint=$(zfs get -H -o value mountpoint "${dataset}")
+
+    log "Creating NFS export for '${dataset}' to '${network}'..."
+
+    echo "${mountpoint} ${network}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+    exportfs -ra
+
+    log "NFS export created: ${mountpoint} -> ${network}"
+}
+
+cmd_share_list() {
+    echo ""
+    echo "=== SMB Shares ==="
+    testparm -s 2>/dev/null | grep '^\[' | grep -v '\[global\]' || echo "  (none)"
+
+    echo ""
+    echo "=== NFS Exports ==="
+    exportfs -v 2>/dev/null || echo "  (none)"
+
+    echo ""
+    echo "=== iSCSI Targets ==="
+    tgtadm --lld iscsi --op show --mode target 2>/dev/null | grep "Target" || echo "  (none)"
+    echo ""
+}
+
+# =============================================================================
+# DISK COMMANDS
+# =============================================================================
+
+cmd_disk_list() {
+    echo ""
+    echo "=== Physical Disks ==="
+    lsblk -d -o NAME,SIZE,TYPE,MODEL,SERIAL,ROTA,TRAN -e 7,11
+    echo ""
+    echo "=== ZFS Pool Membership ==="
+    zpool status -L 2>/dev/null | grep -E '^\s+(sd|nvme|vd)' || echo "  (no pools)"
+    echo ""
+}
+
+cmd_disk_smart() {
+    local device="$1"
+    log "S.M.A.R.T. report for ${device}:"
+    smartctl -a "${device}"
+}
+
+cmd_disk_benchmark() {
+    local device="$1"
+    log "Running benchmark on ${device} (30-second sequential read/write test)..."
+    fio --name=benchmark --filename="${device}" --rw=readwrite \
+        --bs=1M --size=1G --runtime=30 --time_based \
+        --ioengine=libaio --direct=1 --numjobs=1 \
+        --group_reporting --output-format=normal
+}
+
+# =============================================================================
+# HEALTH DASHBOARD
+# =============================================================================
+
+cmd_health() {
+    echo ""
+    echo "╔══════════════════════════════════════════╗"
+    echo "║     🍀 CloverNAS Health Dashboard        ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo ""
+
+    # Pool health
+    echo "=== ZFS Pools ==="
+    zpool list -o name,size,alloc,free,cap,health 2>/dev/null || echo "  No pools configured"
+    echo ""
+
+    # Disk health
+    echo "=== Disk Health ==="
+    for disk in /dev/sd? /dev/nvme?n?; do
+        [[ -b "${disk}" ]] || continue
+        local status
+        status=$(smartctl -H "${disk}" 2>/dev/null | grep "SMART overall" | awk '{print $NF}')
+        local temp
+        temp=$(smartctl -A "${disk}" 2>/dev/null | grep -i temperature | head -1 | awk '{print $(NF-1)}')
+        printf "  %-15s Health: %-8s Temp: %s°C\n" "$(basename ${disk})" "${status:-unknown}" "${temp:-?}"
+    done
+    echo ""
+
+    # Capacity
+    echo "=== Storage Capacity ==="
+    zfs list -o name,used,avail,refer,compressratio 2>/dev/null | head -20 || echo "  No datasets"
+    echo ""
+
+    # Recent snapshots
+    echo "=== Recent Snapshots (last 5) ==="
+    zfs list -t snapshot -o name,used,creation -S creation 2>/dev/null | head -6 || echo "  No snapshots"
+    echo ""
+
+    # Services
+    echo "=== Service Status ==="
+    for svc in smbd nfs-kernel-server tgt libvirtd zfs-zed smartd; do
+        local status
+        if systemctl is-active "${svc}" &>/dev/null; then
+            status="✅ running"
+        elif systemctl is-enabled "${svc}" &>/dev/null; then
+            status="⏸  stopped"
+        else
+            status="⬚  disabled"
+        fi
+        printf "  %-25s %s\n" "${svc}" "${status}"
+    done
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+COMMAND="${1:-}"
+SUBCOMMAND="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${COMMAND}" in
+    pool)
+        case "${SUBCOMMAND}" in
+            create)   cmd_pool_create "$@" ;;
+            destroy)  zpool destroy "$@" ;;
+            status)   cmd_pool_status "$@" ;;
+            scrub)    cmd_pool_scrub "$@" ;;
+            import)   zpool import "$@" ;;
+            export)   zpool export "$@" ;;
+            *)        usage ;;
+        esac
+        ;;
+    dataset)
+        case "${SUBCOMMAND}" in
+            create)   zfs create "$@" ;;
+            destroy)  zfs destroy "$@" ;;
+            list)     zfs list "$@" ;;
+            set)      zfs set "$@" ;;
+            *)        usage ;;
+        esac
+        ;;
+    snap)
+        case "${SUBCOMMAND}" in
+            create)   cmd_snap_create "$@" ;;
+            list)     cmd_snap_list "$@" ;;
+            rollback) cmd_snap_rollback "$@" ;;
+            destroy)  zfs destroy "$@" ;;
+            lock)     cmd_snap_lock "$@" ;;
+            *)        usage ;;
+        esac
+        ;;
+    share)
+        case "${SUBCOMMAND}" in
+            smb)    cmd_share_smb "$@" ;;
+            nfs)    cmd_share_nfs "$@" ;;
+            list)   cmd_share_list ;;
+            *)      usage ;;
+        esac
+        ;;
+    disk)
+        case "${SUBCOMMAND}" in
+            list)      cmd_disk_list ;;
+            smart)     cmd_disk_smart "$@" ;;
+            benchmark) cmd_disk_benchmark "$@" ;;
+            test)      smartctl -t long "$@" ;;
+            wipe)      err "Use: wipefs -a <device> && dd if=/dev/zero of=<device> bs=1M count=100" ;;
+            *)         usage ;;
+        esac
+        ;;
+    health)  cmd_health ;;
+    alerts)  zpool status -x 2>/dev/null; smartctl --scan 2>/dev/null ;;
+    *)       usage ;;
+esac
