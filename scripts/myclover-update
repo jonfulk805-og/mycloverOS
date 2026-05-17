@@ -42,6 +42,13 @@ for model in ${MODELS}; do
     ollama pull "${model}" 2>/dev/null || log "  Failed to update ${model}"
 done
 
+# --- Update CloverMarket apps ------------------------------------------------
+log "Checking CloverMarket app updates..."
+if command -v clovermarket-ctl &>/dev/null; then
+    clovermarket-ctl refresh 2>/dev/null || log "  CloverMarket registry refresh skipped (offline?)"
+    clovermarket-ctl update 2>/dev/null || log "  CloverMarket app updates skipped"
+fi
+
 # --- Restart updated containers ----------------------------------------------
 log "Recreating containers with updated images..."
 for compose_dir in /opt/cloverstack/*/; do
