@@ -16,7 +16,7 @@ mkdir -p /etc/myclover/modules.d
 ln -sf /usr/local/bin/cloverstack-setup /usr/local/bin/cloverstack-ctl
 
 # =============================================================================
-# LIVE-BOOT SERVICE FIXES (created inline to avoid includes.chroot ordering)
+# LIVE-BOOT SERVICE FIXES (all created inline — no overlay dependency)
 # =============================================================================
 
 # --- 1. Create the live-boot fixup script ------------------------------------
@@ -75,19 +75,25 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 SVCUNIT
 
-# --- 3. Create SSH drop-in for host key generation ---------------------------
+# --- 3. SSH drop-in for host key generation ----------------------------------
+# IMPORTANT: First line 'ExecStartPre=' (empty) CLEARS the inherited list.
+# Without this, the original sshd -t config test runs BEFORE key generation
+# and fails because no host keys exist yet.
 mkdir -p /etc/systemd/system/ssh.service.d
 cat > /etc/systemd/system/ssh.service.d/live-boot.conf <<'SSHDROP'
 [Service]
+ExecStartPre=
 ExecStartPre=/bin/mkdir -p /run/sshd
 ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=/usr/sbin/sshd -t
 SSHDROP
 
-# --- 4. Create Docker daemon config for live-boot ----------------------------
+# --- 4. Docker daemon config (NO forced storage driver) ----------------------
+# Let Docker auto-detect the best storage driver for the filesystem.
+# Forcing overlay2 causes failure on live-boot overlayfs.
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json <<'DOCKERCFG'
 {
-    "storage-driver": "overlay2",
     "log-driver": "json-file",
     "log-opts": {
         "max-size": "10m",
@@ -97,7 +103,7 @@ cat > /etc/docker/daemon.json <<'DOCKERCFG'
 }
 DOCKERCFG
 
-# --- 5. Create modules-load.d for Docker kernel modules ----------------------
+# --- 5. Docker kernel modules auto-load config ------------------------------
 mkdir -p /etc/modules-load.d
 cat > /etc/modules-load.d/docker.conf <<'MODLOAD'
 overlay
@@ -107,6 +113,16 @@ ip_vs
 nf_conntrack
 veth
 MODLOAD
+
+# --- 6. Autologin on tty2 for emergency console access ----------------------
+# This ensures the user always has a working terminal, even if tty1 is
+# taken over by the setup wizard output
+mkdir -p /etc/systemd/system/getty@tty2.service.d
+cat > /etc/systemd/system/getty@tty2.service.d/autologin.conf <<'AUTOLOGIN'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+AUTOLOGIN
 
 # --- Enable all services -----------------------------------------------------
 systemctl enable ssh 2>/dev/null || true
