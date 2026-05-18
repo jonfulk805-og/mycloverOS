@@ -22,6 +22,11 @@ systemctl enable myclover-provision 2>/dev/null || true
 # --- Set first-boot flag -----------------------------------------------------
 touch /var/lib/cloverstack/.first-boot
 
+
+# --- Enable live-boot fixup service -----------------------------------------
+chmod +x /usr/local/bin/myclover-live-fixup 2>/dev/null || true
+systemctl enable myclover-live-fixup 2>/dev/null || true
+
 # --- OS branding -------------------------------------------------------------
 # Override os-release
 cat > /etc/os-release <<'EOF'
