@@ -1,0 +1,13 @@
+[Unit]
+Description=mycloverOS Live-Boot Service Fixup
+DefaultDependencies=no
+Before=docker.service ssh.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/myclover-live-fixup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
