@@ -1,0 +1,31 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS live-boot service fixup
+# Runs early at boot to prepare the live environment
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Running live-boot service fixup..."
+
+# Ensure /var/lib/docker exists and is writable
+mkdir -p /var/lib/docker
+
+# Load required kernel modules for Docker networking
+modprobe overlay 2>/dev/null || true
+modprobe br_netfilter 2>/dev/null || true
+modprobe ip_tables 2>/dev/null || true
+modprobe ip_vs 2>/dev/null || true
+modprobe nf_conntrack 2>/dev/null || true
+modprobe veth 2>/dev/null || true
+
+# Enable IP forwarding (required for Docker networking)
+sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
+sysctl -w net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true
+
+# Generate SSH host keys if missing
+if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+    ssh-keygen -A
+    echo "[mycloverOS] SSH host keys generated"
+fi
+
+echo "[mycloverOS] Live-boot fixup complete"
