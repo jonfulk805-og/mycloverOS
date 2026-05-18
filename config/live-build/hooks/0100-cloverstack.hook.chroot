@@ -15,20 +15,108 @@ mkdir -p /etc/myclover/modules.d
 # --- Create cloverstack-ctl symlink -----------------------------------------
 ln -sf /usr/local/bin/cloverstack-setup /usr/local/bin/cloverstack-ctl
 
-# --- Enable services ---------------------------------------------------------
+# =============================================================================
+# LIVE-BOOT SERVICE FIXES (created inline to avoid includes.chroot ordering)
+# =============================================================================
+
+# --- 1. Create the live-boot fixup script ------------------------------------
+cat > /usr/local/bin/myclover-live-fixup <<'FIXUP'
+#!/bin/bash
+# mycloverOS live-boot service fixup — runs early at boot
+set -e
+echo "[mycloverOS] Running live-boot service fixup..."
+
+# Create /run/sshd (required for SSH privilege separation)
+mkdir -p /run/sshd
+chmod 0755 /run/sshd
+
+# Generate SSH host keys if missing
+if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+    echo "[mycloverOS] Generating SSH host keys..."
+    ssh-keygen -A
+fi
+
+# Ensure /var/lib/docker exists
+mkdir -p /var/lib/docker
+
+# Load Docker-required kernel modules
+for mod in overlay br_netfilter ip_tables ip_vs nf_conntrack veth xt_conntrack; do
+    modprobe "$mod" 2>/dev/null || true
+done
+
+# Enable IP forwarding for Docker networking
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>&1 || true
+
+# Ensure iptables is in legacy mode for Docker compatibility
+if command -v update-alternatives &>/dev/null; then
+    update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+fi
+
+echo "[mycloverOS] Live-boot fixup complete"
+FIXUP
+chmod +x /usr/local/bin/myclover-live-fixup
+
+# --- 2. Create the fixup systemd service ------------------------------------
+cat > /etc/systemd/system/myclover-live-fixup.service <<'SVCUNIT'
+[Unit]
+Description=mycloverOS Live-Boot Service Fixup
+DefaultDependencies=no
+Before=docker.service ssh.service containerd.service
+After=local-fs.target systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/myclover-live-fixup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SVCUNIT
+
+# --- 3. Create SSH drop-in for host key generation ---------------------------
+mkdir -p /etc/systemd/system/ssh.service.d
+cat > /etc/systemd/system/ssh.service.d/live-boot.conf <<'SSHDROP'
+[Service]
+ExecStartPre=/bin/mkdir -p /run/sshd
+ExecStartPre=/usr/bin/ssh-keygen -A
+SSHDROP
+
+# --- 4. Create Docker daemon config for live-boot ----------------------------
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<'DOCKERCFG'
+{
+    "storage-driver": "overlay2",
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+    },
+    "iptables": true
+}
+DOCKERCFG
+
+# --- 5. Create modules-load.d for Docker kernel modules ----------------------
+mkdir -p /etc/modules-load.d
+cat > /etc/modules-load.d/docker.conf <<'MODLOAD'
+overlay
+br_netfilter
+ip_tables
+ip_vs
+nf_conntrack
+veth
+MODLOAD
+
+# --- Enable all services -----------------------------------------------------
 systemctl enable ssh 2>/dev/null || true
 systemctl enable myclover-provision 2>/dev/null || true
+systemctl enable myclover-live-fixup 2>/dev/null || true
 
 # --- Set first-boot flag -----------------------------------------------------
 touch /var/lib/cloverstack/.first-boot
 
-
-# --- Enable live-boot fixup service -----------------------------------------
-chmod +x /usr/local/bin/myclover-live-fixup 2>/dev/null || true
-systemctl enable myclover-live-fixup 2>/dev/null || true
-
 # --- OS branding -------------------------------------------------------------
-# Override os-release
 cat > /etc/os-release <<'EOF'
 PRETTY_NAME="mycloverOS 0.1.0 (seedling)"
 NAME="mycloverOS"
