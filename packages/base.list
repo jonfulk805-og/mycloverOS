@@ -11,7 +11,7 @@ udev
 init
 
 # --- Kernel ---
-linux-image-amd64
+# linux-image-amd64 is installed automatically by live-build (--linux-packages linux-image)
 
 # --- Live system (REQUIRED for live CD boot) ---
 # live-boot: initramfs hooks that find and mount the squashfs live filesystem
