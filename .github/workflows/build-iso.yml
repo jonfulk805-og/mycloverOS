@@ -88,16 +88,39 @@ jobs:
           cd build
           sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
           md5sum "${ISO_NAME}" > "${ISO_NAME}.md5"
-          ISO_SIZE=$(du -h "${ISO_NAME}" | cut -f1)
-          # Compress with zstd for GitHub Release (2 GB asset limit)
-          zstd -T0 -10 "${ISO_NAME}" -o "${ISO_NAME}.zst"
-          sha256sum "${ISO_NAME}.zst" > "${ISO_NAME}.zst.sha256"
-          ZST_SIZE=$(du -h "${ISO_NAME}.zst" | cut -f1)
+          ISO_SIZE=$(stat -c%s "${ISO_NAME}")
+          ISO_SIZE_H=$(du -h "${ISO_NAME}" | cut -f1)
+
+          # GitHub Release asset limit = 2,147,483,648 bytes (2 GiB)
+          LIMIT=1900000000   # ~1.9 GB — leave margin
+
+          if [ "$ISO_SIZE" -gt "$LIMIT" ]; then
+            echo "ISO is ${ISO_SIZE_H} — splitting into <1.9 GB parts for GitHub Release"
+            split -b 1900m "${ISO_NAME}" "${ISO_NAME}.part-"
+            # Rename parts to friendly names: .part-aa → .part1, .part-ab → .part2, etc.
+            PART_NUM=1
+            RELEASE_FILES=""
+            for PART in ${ISO_NAME}.part-*; do
+              FRIENDLY="${ISO_NAME}.part${PART_NUM}"
+              mv "$PART" "$FRIENDLY"
+              sha256sum "$FRIENDLY" >> "${ISO_NAME}.parts.sha256"
+              RELEASE_FILES="${RELEASE_FILES}build/${FRIENDLY}\n"
+              PART_NUM=$((PART_NUM + 1))
+            done
+            TOTAL_PARTS=$((PART_NUM - 1))
+            echo "split=true" >> "$GITHUB_OUTPUT"
+            echo "total_parts=${TOTAL_PARTS}" >> "$GITHUB_OUTPUT"
+            # Write the file list for the release step
+            echo -e "$RELEASE_FILES" > /tmp/release_files.txt
+          else
+            echo "ISO is ${ISO_SIZE_H} — fits in a single release asset"
+            echo "split=false" >> "$GITHUB_OUTPUT"
+          fi
+
           echo "iso_name=${ISO_NAME}" >> "$GITHUB_OUTPUT"
           echo "version=${DISTRO_VERSION}" >> "$GITHUB_OUTPUT"
           echo "codename=${DISTRO_CODENAME}" >> "$GITHUB_OUTPUT"
-          echo "iso_size=${ISO_SIZE}" >> "$GITHUB_OUTPUT"
-          echo "zst_size=${ZST_SIZE}" >> "$GITHUB_OUTPUT"
+          echo "iso_size=${ISO_SIZE_H}" >> "$GITHUB_OUTPUT"
 
       - name: Upload ISO as artifact
         uses: actions/upload-artifact@v4
@@ -109,8 +132,10 @@ jobs:
             build/${{ steps.prep.outputs.iso_name }}.md5
           retention-days: 90
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+      - name: Create GitHub Release (single file)
+        if: |
+          steps.prep.outputs.split == 'false' &&
+          (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'))
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', steps.prep.outputs.version, github.run_number) }}
@@ -121,17 +146,14 @@ jobs:
           body: |
             ## 🍀 mycloverOS ${{ steps.prep.outputs.version }} (${{ steps.prep.outputs.codename }}) — ${{ steps.edition.outputs.edition }} edition
 
-            **Download the compressed ISO below**, decompress, and flash to USB or mount in a VM.
+            **Download the ISO below** and flash to USB or mount in a VM.
 
             ### Quick Start
             ```bash
-            # Decompress the ISO
-            zstd -d mycloverOS-${{ steps.prep.outputs.version }}-${{ steps.edition.outputs.edition }}-amd64.iso.zst
-
             # Write to USB (replace /dev/sdX with your USB device)
             sudo dd if=mycloverOS-${{ steps.prep.outputs.version }}-${{ steps.edition.outputs.edition }}-amd64.iso of=/dev/sdX bs=4M status=progress
 
-            # Or use balenaEtcher / Rufus for a GUI option (after decompressing)
+            # Or use balenaEtcher / Rufus for a GUI option
             ```
 
             ### What's Included
@@ -152,12 +174,69 @@ jobs:
             | Disk | 32 GB | 128+ GB (SSD) |
             | GPU | — | NVIDIA (for AI acceleration) |
 
-            **ISO Size:** ${{ steps.prep.outputs.iso_size }} (compressed: ${{ steps.prep.outputs.zst_size }})
+            **ISO Size:** ${{ steps.prep.outputs.iso_size }}
 
             ---
             _Your Data. Your Metal. Your Rules._ 🍀
           files: |
-            build/${{ steps.prep.outputs.iso_name }}.zst
-            build/${{ steps.prep.outputs.iso_name }}.zst.sha256
+            build/${{ steps.prep.outputs.iso_name }}
+            build/${{ steps.prep.outputs.iso_name }}.sha256
+            build/${{ steps.prep.outputs.iso_name }}.md5
+
+      - name: Create GitHub Release (split parts)
+        if: |
+          steps.prep.outputs.split == 'true' &&
+          (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', steps.prep.outputs.version, github.run_number) }}
+          name: "mycloverOS ${{ steps.prep.outputs.version }} (${{ steps.prep.outputs.codename }}) — ${{ steps.edition.outputs.edition }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 🍀 mycloverOS ${{ steps.prep.outputs.version }} (${{ steps.prep.outputs.codename }}) — ${{ steps.edition.outputs.edition }} edition
+
+            **This ISO is split into ${{ steps.prep.outputs.total_parts }} parts** (GitHub has a 2 GB per-file limit). Download all parts and combine:
+
+            ### Download & Combine
+            ```bash
+            # Download all .part* files from this release, then:
+            cat mycloverOS-${{ steps.prep.outputs.version }}-${{ steps.edition.outputs.edition }}-amd64.iso.part* > mycloverOS.iso
+
+            # Verify integrity
+            sha256sum -c mycloverOS-${{ steps.prep.outputs.version }}-${{ steps.edition.outputs.edition }}-amd64.iso.sha256
+
+            # Write to USB (replace /dev/sdX with your USB device)
+            sudo dd if=mycloverOS.iso of=/dev/sdX bs=4M status=progress
+
+            # Or use balenaEtcher / Rufus for a GUI option
+            ```
+
+            ### What's Included
+            - 🖥️ Debian Bookworm base (stable, secure, minimal)
+            - 🐳 Docker CE + Compose v2 (containerized everything)
+            - 🤖 Ollama AI engine (local LLM inference)
+            - 🔒 WireGuard VPN mesh networking
+            - 📦 CloverStack modules (NetMon, SentryLog, Vault, Chappie)
+            - 🛒 CloverMarket on-device app marketplace
+            - 💾 CloverNAS (ZFS storage, SMB/NFS)
+            - 🌐 First-boot setup wizard (web UI on port 8080)
+
+            ### System Requirements
+            | | Minimum | Recommended |
+            |---|---|---|
+            | CPU | 2 cores x86_64 | 4+ cores |
+            | RAM | 4 GB | 8+ GB |
+            | Disk | 32 GB | 128+ GB (SSD) |
+            | GPU | — | NVIDIA (for AI acceleration) |
+
+            **Full ISO Size:** ${{ steps.prep.outputs.iso_size }} (split into ${{ steps.prep.outputs.total_parts }} parts)
+
+            ---
+            _Your Data. Your Metal. Your Rules._ 🍀
+          files: |
+            build/${{ steps.prep.outputs.iso_name }}.part*
+            build/${{ steps.prep.outputs.iso_name }}.parts.sha256
             build/${{ steps.prep.outputs.iso_name }}.sha256
             build/${{ steps.prep.outputs.iso_name }}.md5
