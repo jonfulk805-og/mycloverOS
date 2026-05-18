@@ -88,20 +88,8 @@ ExecStartPre=/usr/bin/ssh-keygen -A
 ExecStartPre=/usr/sbin/sshd -t
 SSHDROP
 
-# --- 4. Docker daemon config (NO forced storage driver) ----------------------
-# Let Docker auto-detect the best storage driver for the filesystem.
-# Forcing overlay2 causes failure on live-boot overlayfs.
-mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<'DOCKERCFG'
-{
-    "log-driver": "json-file",
-    "log-opts": {
-        "max-size": "10m",
-        "max-file": "3"
-    },
-    "iptables": true
-}
-DOCKERCFG
+# --- 4. Docker daemon config is created by 0200-harden.hook.chroot ----------
+# (no duplicate creation here to avoid being overwritten)
 
 # --- 5. Docker kernel modules auto-load config ------------------------------
 mkdir -p /etc/modules-load.d
