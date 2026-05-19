@@ -112,6 +112,26 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
 AUTOLOGIN
 
+# --- 7. Set known credentials for live boot ----------------------------------
+# Create 'clover' user if live-config hasn't yet (chroot phase)
+if ! id clover &>/dev/null; then
+    useradd -m -s /bin/bash -G sudo clover 2>/dev/null || true
+fi
+# Set explicit password: clover / clover  (user can change after install)
+echo "clover:clover" | chpasswd
+# Also set root password for console access: root / clover
+echo "root:clover" | chpasswd
+# Allow root login on local console (NOT ssh -- ssh stays PermitRootLogin no)
+
+# --- 8. Autologin on tty1 as clover for immediate console access -------------
+# Hyper-V Gen2 VMs can't switch ttys, so tty1 must be usable out of the box
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<'AUTOLOGIN1'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin clover --noclear %I $TERM
+AUTOLOGIN1
+
 # --- Enable all services -----------------------------------------------------
 systemctl enable ssh 2>/dev/null || true
 systemctl enable myclover-provision 2>/dev/null || true
