@@ -339,6 +339,7 @@ cat > /etc/docker/daemon.json <<'DOCKER'
     "live-restore": true,
     "userland-proxy": false,
     "no-new-privileges": true,
+    "storage-driver": "vfs",
     "icc": false,
     "default-ulimits": {
         "nofile": {
@@ -361,8 +362,8 @@ cat > /etc/docker/daemon.json <<'DOCKER'
 }
 DOCKER
 
-# Note: no explicit storage-driver — Docker auto-detects the best driver.
-# On live-boot (overlayfs root), Docker falls back to vfs/fuse-overlayfs.
+# Note: storage-driver set to vfs for live-boot overlayfs compatibility — Docker auto-detects the best driver.
+# Docker cannot nest overlay2 on overlayfs. Change to overlay2 after install to disk.
 # seccomp uses Docker's built-in default profile (no custom file needed).
 
 echo "[harden] Docker daemon hardened"
