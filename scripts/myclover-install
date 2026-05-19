@@ -169,8 +169,30 @@ fi
 chroot "${INSTALL_ROOT}" useradd -m -s /bin/bash -G sudo,docker "${USERNAME}" 2>/dev/null || true
 echo "${USERNAME}:${PASSWORD}" | chroot "${INSTALL_ROOT}" chpasswd
 
-# Remove live-boot packages
-chroot "${INSTALL_ROOT}" apt-get remove -y live-boot live-config live-tools 2>/dev/null || true
+# Remove live-boot packages (they break initramfs on a real disk)
+chroot "${INSTALL_ROOT}" apt-get remove --purge -y live-boot live-config live-tools 2>/dev/null || true
+chroot "${INSTALL_ROOT}" apt-get autoremove -y 2>/dev/null || true
+
+# Switch Docker from vfs (live-boot workaround) to overlay2 (proper for ext4 disk)
+log "Configuring Docker for disk storage (overlay2)..."
+if [[ -f "${INSTALL_ROOT}/etc/docker/daemon.json" ]]; then
+    cat > "${INSTALL_ROOT}/etc/docker/daemon.json" <<'DJEOF'
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "50m", "max-file": "3" },
+  "live-restore": true,
+  "userland-proxy": false,
+  "no-new-privileges": true,
+  "storage-driver": "overlay2",
+  "iptables": true
+}
+DJEOF
+fi
+
+# --- Mark for first-boot provisioning (BEFORE unmount) -----------------------
+log "Setting first-boot provisioning flag..."
+mkdir -p "${INSTALL_ROOT}/var/lib/cloverstack"
+touch "${INSTALL_ROOT}/var/lib/cloverstack/.first-boot"
 
 # --- Bootloader --------------------------------------------------------------
 log "Installing bootloader..."
@@ -178,23 +200,28 @@ log "Installing bootloader..."
 mount --bind /dev "${INSTALL_ROOT}/dev"
 mount --bind /proc "${INSTALL_ROOT}/proc"
 mount --bind /sys "${INSTALL_ROOT}/sys"
+mount --bind /run "${INSTALL_ROOT}/run" 2>/dev/null || true
 
+# Ensure efibootmgr is available for UEFI installs
 if [[ "${BOOT_MODE}" == "uefi" ]]; then
-    chroot "${INSTALL_ROOT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mycloverOS
+    chroot "${INSTALL_ROOT}" apt-get install -y efibootmgr 2>/dev/null || true
+    chroot "${INSTALL_ROOT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mycloverOS --recheck
 else
-    chroot "${INSTALL_ROOT}" grub-install "/dev/${TARGET_DISK}"
+    chroot "${INSTALL_ROOT}" grub-install "/dev/${TARGET_DISK}" --recheck
 fi
+
+# Rebuild initramfs WITHOUT live-boot hooks (critical for disk boot)
+log "Rebuilding initramfs for disk boot..."
+chroot "${INSTALL_ROOT}" update-initramfs -u -k all
 
 chroot "${INSTALL_ROOT}" update-grub
 
 # --- Cleanup -----------------------------------------------------------------
 log "Cleaning up..."
+umount "${INSTALL_ROOT}/run" 2>/dev/null || true
 umount "${INSTALL_ROOT}/dev" "${INSTALL_ROOT}/proc" "${INSTALL_ROOT}/sys"
 [[ -n "${BOOT_PART}" ]] && umount "${INSTALL_ROOT}/boot/efi"
 umount "${INSTALL_ROOT}"
-
-# --- Mark for first-boot provisioning ----------------------------------------
-touch /var/lib/cloverstack/.first-boot 2>/dev/null || true
 
 echo ""
 log "============================================"
