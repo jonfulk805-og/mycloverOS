@@ -1,0 +1,126 @@
+#!/bin/bash
+# =============================================================================
+# 0350-cloverdesktop.hook.chroot
+# Install CloverDesktop — containerized desktop manager + MCTVS integration
+# =============================================================================
+set -e
+
+echo "[cloverdesktop] Installing CloverDesktop module..."
+
+# --- Create directory structure ---
+mkdir -p /opt/cloverstack/modules/cloverdesktop/{templates,running,exports,mctvs/installed}
+mkdir -p /var/lib/cloverdesktop/licenses
+mkdir -p /var/log/cloverstack
+
+# --- Install cloverdesktop CLI ---
+chmod +x /usr/local/bin/cloverdesktop 2>/dev/null || true
+
+# --- CloverDesktop config ---
+cat > /etc/myclover/cloverdesktop.conf <<'CONF'
+# CloverDesktop Configuration
+# ===========================
+
+# Default desktop to offer during first-boot wizard
+CLOVERDESKTOP_DEFAULT="xfce"
+
+# Default resolution for new desktops
+CLOVERDESKTOP_RESOLUTION="1920x1080"
+
+# Starting port range for desktop containers (auto-increments)
+CLOVERDESKTOP_PORT_START=6901
+
+# Enable MCTVS Creator Market integration
+CLOVERDESKTOP_MCTVS_ENABLED=true
+
+# MCTVS Registry URL
+CLOVERDESKTOP_MCTVS_REGISTRY="https://market.myclover.tech/api/v1"
+
+# Auto-pull desktop on first boot (set via setup wizard)
+# Options: none, xfce, kde, mate, i3, openbox
+CLOVERDESKTOP_AUTOSTART="none"
+
+# GPU passthrough (auto-detected, override here)
+# CLOVERDESKTOP_GPU=true
+
+# Portainer template sync on boot
+CLOVERDESKTOP_PORTAINER_SYNC=true
+CONF
+
+# --- Firewall rules for desktop ports ---
+# Ports 6901-6920 for desktop containers
+cat >> /etc/myclover/firewall-rules.d/cloverdesktop.rules 2>/dev/null <<'EOF' || true
+# CloverDesktop — containerized desktop ports
+ufw allow 6901:6920/tcp comment "CloverDesktop web access"
+EOF
+
+# --- Systemd service for auto-starting desktops on boot ---
+cat > /etc/systemd/system/cloverdesktop-autostart.service <<'EOF'
+[Unit]
+Description=CloverDesktop Auto-Start
+After=docker.service myclover-provision.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cloverdesktop-autostart
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# --- Auto-start helper script ---
+cat > /usr/local/bin/cloverdesktop-autostart <<'SCRIPT'
+#!/bin/bash
+# Auto-start CloverDesktop containers that were running before shutdown
+set -euo pipefail
+
+source /etc/myclover/cloverdesktop.conf 2>/dev/null || true
+
+RUNNING_DIR="/opt/cloverstack/modules/cloverdesktop/running"
+LOG="/var/log/cloverstack/cloverdesktop.log"
+
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [autostart] $*" >> "$LOG"; }
+
+# Wait for Docker to be fully ready
+for i in $(seq 1 30); do
+    docker info &>/dev/null && break
+    sleep 2
+done
+
+# Restart previously-running desktops
+if [[ -d "$RUNNING_DIR" ]]; then
+    for state_file in "$RUNNING_DIR"/*.json; do
+        [[ -f "$state_file" ]] || continue
+        desktop_id=$(python3 -c "import json; print(json.load(open('$state_file'))['desktop_id'])" 2>/dev/null || continue)
+        instance=$(python3 -c "import json; print(json.load(open('$state_file'))['instance'])" 2>/dev/null || echo "default")
+        port=$(python3 -c "import json; print(json.load(open('$state_file'))['port'])" 2>/dev/null || echo "")
+
+        container_name="cloverdesktop-${desktop_id}-${instance}"
+        if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+            log "Restarting desktop: ${desktop_id} (instance: ${instance})"
+            /usr/local/bin/cloverdesktop start "$desktop_id" "$instance" "$port" >> "$LOG" 2>&1 || true
+        fi
+    done
+fi
+
+# Auto-start default desktop (first boot only)
+if [[ "${CLOVERDESKTOP_AUTOSTART:-none}" != "none" ]]; then
+    if [[ ! -f /var/lib/cloverdesktop/.autostart-done ]]; then
+        log "First boot: auto-starting ${CLOVERDESKTOP_AUTOSTART}"
+        /usr/local/bin/cloverdesktop start "${CLOVERDESKTOP_AUTOSTART}" >> "$LOG" 2>&1 || true
+        touch /var/lib/cloverdesktop/.autostart-done
+    fi
+fi
+
+# Sync Portainer templates
+if [[ "${CLOVERDESKTOP_PORTAINER_SYNC:-true}" == "true" ]]; then
+    log "Syncing Portainer desktop templates"
+    /usr/local/bin/cloverdesktop portainer-sync >> "$LOG" 2>&1 || true
+fi
+SCRIPT
+chmod +x /usr/local/bin/cloverdesktop-autostart
+
+systemctl enable cloverdesktop-autostart 2>/dev/null || true
+
+echo "[cloverdesktop] CloverDesktop module installed."
