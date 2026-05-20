@@ -199,6 +199,12 @@ chmod +x config/includes.chroot/usr/local/bin/cloverstack-*
 chmod +x config/includes.chroot/usr/local/bin/clovermarket* 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/cloverapp-picker 2>/dev/null || true
 
+# CloverDesktop
+if [[ -f "${SCRIPT_DIR}/scripts/cloverdesktop" ]]; then
+    cp "${SCRIPT_DIR}/scripts/cloverdesktop" config/includes.chroot/usr/local/bin/
+    chmod +x config/includes.chroot/usr/local/bin/cloverdesktop
+fi
+
 # CloverNAS / CloverDeploy / CloverMesh CLI scripts
 for script in clovernas cloverdeploy clovermesh; do
     if [[ -f "${SCRIPT_DIR}/scripts/${script}" ]]; then
