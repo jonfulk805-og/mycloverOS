@@ -1,0 +1,23 @@
+{
+  "name": "netmon",
+  "display_name": "NetMon",
+  "description": "Network monitoring and alerting powered by Zabbix",
+  "version": "1.0.0",
+  "category": "monitoring",
+  "ports": {
+    "web": 8081,
+    "server": 10051
+  },
+  "url_path": "/netmon",
+  "upstream": "Zabbix 7.0",
+  "upstream_license": "GPL-2.0",
+  "min_ram_mb": 1024,
+  "min_disk_gb": 10,
+  "default_enabled": true,
+  "services": [
+    "zabbix-server",
+    "zabbix-web",
+    "zabbix-agent",
+    "zabbix-postgres"
+  ]
+}

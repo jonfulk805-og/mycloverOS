@@ -1,0 +1,21 @@
+{
+  "name": "clovermine",
+  "display_name": "CloverMine",
+  "description": "Opt-in crypto mining",
+  "version": "1.0.0",
+  "category": "compute",
+  "ports": {
+    "dashboard": 8086
+  },
+  "url_path": "/mine",
+  "upstream": "XMRig",
+  "upstream_license": "GPL-3.0",
+  "min_ram_mb": 512,
+  "min_disk_gb": 2,
+  "default_enabled": false,
+  "opt_in": true,
+  "services": [
+    "xmrig",
+    "clovermine-dashboard"
+  ]
+}

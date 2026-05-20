@@ -1,0 +1,32 @@
+# CloverStack Module: CloverSign — Digital signage (Anthias)
+services:
+  anthias-server:
+    image: screenly/anthias-server:latest
+    container_name: cloversign-server
+    restart: unless-stopped
+    ports: ["8084:8080"]
+    volumes:
+      - cloversign-data:/data
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloversign.rule=PathPrefix(`/signage`)"
+      - "traefik.http.services.cloversign.loadbalancer.server.port=8080"
+      - "cloverstack.module=cloversign"
+
+  anthias-viewer:
+    image: screenly/anthias-viewer:latest
+    container_name: cloversign-viewer
+    restart: unless-stopped
+    depends_on: [anthias-server]
+    environment:
+      DISPLAY: ":0"
+    volumes: [/tmp/.X11-unix:/tmp/.X11-unix]
+    networks: [cloverstack]
+
+volumes:
+  cloversign-data:
+
+networks:
+  cloverstack: { external: true }

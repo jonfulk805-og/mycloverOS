@@ -1,0 +1,20 @@
+{
+  "name": "cloverbot",
+  "display_name": "CloverBot",
+  "description": "AI-powered customer support chatbot",
+  "version": "1.0.0",
+  "category": "ai",
+  "ports": {
+    "web": 8089
+  },
+  "url_path": "/bot",
+  "upstream": "LibreChat",
+  "upstream_license": "MIT",
+  "min_ram_mb": 1024,
+  "min_disk_gb": 10,
+  "default_enabled": false,
+  "services": [
+    "librechat",
+    "librechat-mongo"
+  ]
+}

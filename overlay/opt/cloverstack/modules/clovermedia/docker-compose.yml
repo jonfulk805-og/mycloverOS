@@ -1,0 +1,43 @@
+# CloverStack Module: CloverMedia — Smart TV + streaming (Jellyfin + Navidrome)
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: clovermedia-jellyfin
+    restart: unless-stopped
+    ports: ["8096:8096", "7359:7359/udp", "1900:1900/udp"]
+    volumes:
+      - clovermedia-jellyfin-config:/config
+      - clovermedia-jellyfin-cache:/cache
+      - ${MEDIA_LIBRARY:-/opt/cloverstack/data/media}:/media
+    devices: [/dev/dri:/dev/dri]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.media.rule=PathPrefix(`/media`)"
+      - "traefik.http.services.media.loadbalancer.server.port=8096"
+      - "cloverstack.module=clovermedia"
+
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: clovermedia-navidrome
+    restart: unless-stopped
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_BASEURL: "/music"
+    ports: ["4533:4533"]
+    volumes:
+      - clovermedia-navidrome-data:/data
+      - ${MUSIC_LIBRARY:-/opt/cloverstack/data/media/music}:/music:ro
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.music.rule=PathPrefix(`/music`)"
+      - "traefik.http.services.music.loadbalancer.server.port=4533"
+
+volumes:
+  clovermedia-jellyfin-config:
+  clovermedia-jellyfin-cache:
+  clovermedia-navidrome-data:
+
+networks:
+  cloverstack: { external: true }

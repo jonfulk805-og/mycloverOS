@@ -1,0 +1,20 @@
+{
+  "name": "chappie",
+  "display_name": "Chappie AI",
+  "description": "AI assistant with local models via Ollama + Open WebUI",
+  "version": "1.0.0",
+  "category": "ai",
+  "ports": {
+    "web": 8083
+  },
+  "url_path": "/chappie",
+  "upstream": "Open WebUI + Ollama",
+  "upstream_license": "MIT",
+  "min_ram_mb": 4096,
+  "min_disk_gb": 20,
+  "default_enabled": true,
+  "gpu_recommended": true,
+  "services": [
+    "open-webui"
+  ]
+}

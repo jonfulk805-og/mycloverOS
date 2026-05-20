@@ -1,0 +1,28 @@
+# Dynamic Traefik Configuration — CloverStack
+http:
+  routers:
+    dashboard:
+      rule: "PathPrefix(`/`)"
+      service: dashboard
+      priority: 1
+      entryPoints: [websecure]
+
+  services:
+    dashboard:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:9443"
+
+  middlewares:
+    secure-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        frameDeny: true
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: 1m

@@ -1,0 +1,85 @@
+# CloverStack Module: CloverPOS — Point of Sale (ERPNext)
+services:
+  erpnext-redis-cache:
+    image: redis:7-alpine
+    container_name: cloverpos-redis-cache
+    restart: unless-stopped
+    networks: [cloverstack]
+
+  erpnext-redis-queue:
+    image: redis:7-alpine
+    container_name: cloverpos-redis-queue
+    restart: unless-stopped
+    networks: [cloverstack]
+
+  erpnext-mariadb:
+    image: mariadb:10.11
+    container_name: cloverpos-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${POS_DB_ROOT_PASSWORD:-cloverstack-pos-root}
+      MYSQL_DATABASE: erpnext
+      MYSQL_USER: erpnext
+      MYSQL_PASSWORD: ${POS_DB_PASSWORD:-cloverstack-pos}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--skip-character-set-client-handshake", "--skip-innodb-read-only-compressed"]
+    volumes: [cloverpos-mariadb-data:/var/lib/mysql]
+    networks: [cloverstack]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  erpnext:
+    image: frappe/erpnext:v15
+    container_name: cloverpos-erpnext
+    restart: unless-stopped
+    depends_on:
+      erpnext-mariadb: { condition: service_healthy }
+      erpnext-redis-cache: { condition: service_started }
+      erpnext-redis-queue: { condition: service_started }
+    environment:
+      DB_HOST: cloverpos-mariadb
+      DB_PORT: "3306"
+      REDIS_CACHE: "redis://cloverpos-redis-cache:6379"
+      REDIS_QUEUE: "redis://cloverpos-redis-queue:6379"
+    ports: ["8087:8080"]
+    volumes:
+      - cloverpos-sites:/home/frappe/frappe-bench/sites
+      - cloverpos-logs:/home/frappe/frappe-bench/logs
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloverpos.rule=PathPrefix(`/pos`)"
+      - "traefik.http.services.cloverpos.loadbalancer.server.port=8080"
+      - "cloverstack.module=cloverpos"
+
+  erpnext-worker:
+    image: frappe/erpnext:v15
+    container_name: cloverpos-worker
+    restart: unless-stopped
+    depends_on: [erpnext]
+    command: bench worker --queue default,short,long
+    volumes:
+      - cloverpos-sites:/home/frappe/frappe-bench/sites
+      - cloverpos-logs:/home/frappe/frappe-bench/logs
+    networks: [cloverstack]
+
+  erpnext-scheduler:
+    image: frappe/erpnext:v15
+    container_name: cloverpos-scheduler
+    restart: unless-stopped
+    depends_on: [erpnext]
+    command: bench schedule
+    volumes:
+      - cloverpos-sites:/home/frappe/frappe-bench/sites
+      - cloverpos-logs:/home/frappe/frappe-bench/logs
+    networks: [cloverstack]
+
+volumes:
+  cloverpos-mariadb-data:
+  cloverpos-sites:
+  cloverpos-logs:
+
+networks:
+  cloverstack: { external: true }

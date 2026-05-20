@@ -1,0 +1,25 @@
+{
+  "name": "sentrylog",
+  "display_name": "SentryLog",
+  "description": "Centralized log management and security event monitoring",
+  "version": "1.0.0",
+  "category": "security",
+  "ports": {
+    "graylog": 9000,
+    "syslog": 1514,
+    "gelf": 12201,
+    "wazuh-api": 55000
+  },
+  "url_path": "/sentrylog",
+  "upstream": "Graylog 6.0 + Wazuh 4.9",
+  "upstream_license": "SSPL + GPL-2.0",
+  "min_ram_mb": 2048,
+  "min_disk_gb": 20,
+  "default_enabled": true,
+  "services": [
+    "graylog",
+    "wazuh-manager",
+    "graylog-opensearch",
+    "graylog-mongo"
+  ]
+}

@@ -1,0 +1,26 @@
+# CloverStack Module: MyClover Vault — Password manager (Vaultwarden)
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: myclover-vault
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${VAULT_DOMAIN:-http://localhost}
+      SIGNUPS_ALLOWED: ${VAULT_SIGNUPS:-true}
+      ADMIN_TOKEN: ${VAULT_ADMIN_TOKEN:-}
+      WEBSOCKET_ENABLED: true
+      INVITATION_ORG_NAME: "MyClover Vault"
+    ports: ["8082:80", "3012:3012"]
+    volumes: [vault-data:/data]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vault.rule=PathPrefix(`/vault`)"
+      - "traefik.http.services.vault.loadbalancer.server.port=80"
+      - "cloverstack.module=myclover-vault"
+
+volumes:
+  vault-data:
+
+networks:
+  cloverstack: { external: true }

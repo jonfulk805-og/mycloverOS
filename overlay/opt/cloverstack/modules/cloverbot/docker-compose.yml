@@ -1,0 +1,39 @@
+# CloverStack Module: CloverBot — AI support chatbot (LibreChat)
+services:
+  librechat-mongo:
+    image: mongo:6.0
+    container_name: cloverbot-mongo
+    restart: unless-stopped
+    volumes: [cloverbot-mongo-data:/data/db]
+    networks: [cloverstack]
+
+  librechat:
+    image: ghcr.io/danny-avila/librechat:latest
+    container_name: cloverbot-librechat
+    restart: unless-stopped
+    depends_on: [librechat-mongo]
+    environment:
+      MONGO_URI: "mongodb://cloverbot-mongo:27017/LibreChat"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      APP_TITLE: "CloverBot"
+      ALLOW_REGISTRATION: ${BOT_REGISTRATION:-true}
+      ENDPOINTS: "ollama,custom"
+    ports: ["8089:3080"]
+    volumes:
+      - cloverbot-data:/app/data
+      - cloverbot-images:/app/client/public/images
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloverbot.rule=PathPrefix(`/bot`)"
+      - "traefik.http.services.cloverbot.loadbalancer.server.port=3080"
+      - "cloverstack.module=cloverbot"
+
+volumes:
+  cloverbot-mongo-data:
+  cloverbot-data:
+  cloverbot-images:
+
+networks:
+  cloverstack: { external: true }

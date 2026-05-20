@@ -1,0 +1,20 @@
+{
+  "name": "myclover-vault",
+  "display_name": "MyClover Vault",
+  "description": "Self-hosted password manager",
+  "version": "1.0.0",
+  "category": "security",
+  "ports": {
+    "web": 8082,
+    "websocket": 3012
+  },
+  "url_path": "/vault",
+  "upstream": "Vaultwarden",
+  "upstream_license": "AGPL-3.0",
+  "min_ram_mb": 256,
+  "min_disk_gb": 2,
+  "default_enabled": true,
+  "services": [
+    "vaultwarden"
+  ]
+}

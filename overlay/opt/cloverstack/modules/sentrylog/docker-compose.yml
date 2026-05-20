@@ -1,0 +1,67 @@
+# CloverStack Module: SentryLog — Log management & security (Graylog + Wazuh)
+services:
+  graylog-mongo:
+    image: mongo:6.0
+    container_name: sentrylog-mongo
+    restart: unless-stopped
+    volumes: [sentrylog-mongo-data:/data/db]
+    networks: [cloverstack]
+
+  graylog-opensearch:
+    image: opensearchproject/opensearch:2.12.0
+    container_name: sentrylog-opensearch
+    restart: unless-stopped
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "discovery.type=single-node"
+      - "DISABLE_SECURITY_PLUGIN=true"
+    volumes: [sentrylog-opensearch-data:/usr/share/opensearch/data]
+    networks: [cloverstack]
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+
+  graylog:
+    image: graylog/graylog:6.0
+    container_name: sentrylog-graylog
+    restart: unless-stopped
+    depends_on: [graylog-mongo, graylog-opensearch]
+    environment:
+      GRAYLOG_PASSWORD_SECRET: ${SENTRYLOG_SECRET:-cloverstack-sentrylog-secret-minimum-16-chars}
+      GRAYLOG_ROOT_PASSWORD_SHA2: ${SENTRYLOG_ROOT_SHA2:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
+      GRAYLOG_HTTP_BIND_ADDRESS: "0.0.0.0:9000"
+      GRAYLOG_ELASTICSEARCH_HOSTS: "http://sentrylog-opensearch:9200"
+      GRAYLOG_MONGODB_URI: "mongodb://sentrylog-mongo:27017/graylog"
+    ports:
+      - "9000:9000"
+      - "1514:1514"
+      - "1514:1514/udp"
+      - "12201:12201"
+      - "12201:12201/udp"
+    volumes: [sentrylog-graylog-data:/usr/share/graylog/data]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sentrylog.rule=PathPrefix(`/sentrylog`)"
+      - "traefik.http.services.sentrylog.loadbalancer.server.port=9000"
+
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.9.0
+    container_name: sentrylog-wazuh
+    restart: unless-stopped
+    ports: ["1515:1515", "1516:1516", "55000:55000"]
+    volumes:
+      - sentrylog-wazuh-data:/var/ossec/data
+      - sentrylog-wazuh-etc:/var/ossec/etc
+    networks: [cloverstack]
+    labels:
+      - "cloverstack.module=sentrylog"
+
+volumes:
+  sentrylog-mongo-data:
+  sentrylog-opensearch-data:
+  sentrylog-graylog-data:
+  sentrylog-wazuh-data:
+  sentrylog-wazuh-etc:
+
+networks:
+  cloverstack: { external: true }

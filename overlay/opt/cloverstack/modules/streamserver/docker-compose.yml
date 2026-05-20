@@ -1,0 +1,31 @@
+# CloverStack Module: StreamServer — Live streaming (Owncast + MediaMTX)
+services:
+  owncast:
+    image: owncast/owncast:latest
+    container_name: streamserver-owncast
+    restart: unless-stopped
+    environment:
+      OWNCAST_ADMIN_PASSWORD: ${STREAM_ADMIN_PASSWORD:-cloverstream}
+    ports: ["8094:8080", "1935:1935"]
+    volumes: [streamserver-owncast-data:/app/data]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.streamserver.rule=PathPrefix(`/stream`)"
+      - "traefik.http.services.streamserver.loadbalancer.server.port=8080"
+      - "cloverstack.module=streamserver"
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: streamserver-mediamtx
+    restart: unless-stopped
+    ports: ["8555:8554", "8888:8888", "8889:8889", "8189:8189/udp", "9710:9710"]
+    volumes: [streamserver-mediamtx-config:/mediamtx]
+    networks: [cloverstack]
+
+volumes:
+  streamserver-owncast-data:
+  streamserver-mediamtx-config:
+
+networks:
+  cloverstack: { external: true }

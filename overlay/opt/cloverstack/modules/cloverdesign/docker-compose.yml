@@ -1,0 +1,37 @@
+# CloverStack Module: CloverDesign — AI design studio (ComfyUI)
+services:
+  comfyui:
+    image: ghcr.io/ai-dock/comfyui:latest
+    container_name: cloverdesign-comfyui
+    restart: unless-stopped
+    environment:
+      DIRECT_ADDRESS: "0.0.0.0"
+      DIRECT_PORT: "8188"
+    ports: ["8088:8188"]
+    volumes:
+      - cloverdesign-data:/workspace
+      - cloverdesign-models:/opt/ComfyUI/models
+      - cloverdesign-output:/opt/ComfyUI/output
+      - cloverdesign-input:/opt/ComfyUI/input
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloverdesign.rule=PathPrefix(`/design`)"
+      - "traefik.http.services.cloverdesign.loadbalancer.server.port=8188"
+      - "cloverstack.module=cloverdesign"
+
+volumes:
+  cloverdesign-data:
+  cloverdesign-models:
+  cloverdesign-output:
+  cloverdesign-input:
+
+networks:
+  cloverstack: { external: true }

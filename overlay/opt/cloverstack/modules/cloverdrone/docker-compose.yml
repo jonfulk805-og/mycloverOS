@@ -1,0 +1,48 @@
+# CloverStack Module: CloverDrone — UAV control (MAVProxy + MediaMTX)
+services:
+  mavproxy:
+    image: ardupilot/ardupilot-dev-base:latest
+    container_name: cloverdrone-mavproxy
+    restart: unless-stopped
+    entrypoint: ["mavproxy.py"]
+    command:
+      - "--master=${DRONE_CONNECTION:-tcp:host.docker.internal:5760}"
+      - "--out=udp:0.0.0.0:14550"
+      - "--out=udp:0.0.0.0:14551"
+      - "--daemon"
+    ports: ["14550:14550/udp", "14551:14551/udp"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    privileged: true
+    networks: [cloverstack]
+    labels:
+      - "cloverstack.module=cloverdrone"
+
+  cloverdrone-web:
+    image: nginx:alpine
+    container_name: cloverdrone-web
+    restart: unless-stopped
+    ports: ["8090:80"]
+    volumes:
+      - cloverdrone-web-data:/usr/share/nginx/html:ro
+      - cloverdrone-missions:/data/missions
+      - cloverdrone-logs:/data/flight-logs
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloverdrone.rule=PathPrefix(`/drone`)"
+      - "traefik.http.services.cloverdrone.loadbalancer.server.port=80"
+
+  cloverdrone-video:
+    image: bluenviron/mediamtx:latest
+    container_name: cloverdrone-video
+    restart: unless-stopped
+    ports: ["8554:8554", "8890:8890/udp"]
+    networks: [cloverstack]
+
+volumes:
+  cloverdrone-web-data:
+  cloverdrone-missions:
+  cloverdrone-logs:
+
+networks:
+  cloverstack: { external: true }

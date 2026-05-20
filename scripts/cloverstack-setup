@@ -147,6 +147,44 @@ cmd_logs() {
     fi
 }
 
+cmd_info() {
+    local mod="$1"
+    local meta="${CLOVERSTACK_ROOT}/modules/${mod}/module.json"
+    if [[ -f "${meta}" ]]; then
+        echo ""
+        echo "Module: $(jq -r '.display_name // .name' "${meta}")"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Description : $(jq -r '.description' "${meta}")"
+        echo "  Version     : $(jq -r '.version' "${meta}")"
+        echo "  Category    : $(jq -r '.category' "${meta}")"
+        echo "  Upstream    : $(jq -r '.upstream' "${meta}")"
+        echo "  License     : $(jq -r '.upstream_license' "${meta}")"
+        echo "  URL Path    : $(jq -r '.url_path' "${meta}")"
+        echo "  Min RAM     : $(jq -r '.min_ram_mb' "${meta}") MB"
+        echo "  Min Disk    : $(jq -r '.min_disk_gb' "${meta}") GB"
+        echo "  Default     : $(jq -r '.default_enabled' "${meta}")"
+        local gpu_req=$(jq -r '.gpu_required // false' "${meta}")
+        local gpu_rec=$(jq -r '.gpu_recommended // false' "${meta}")
+        [[ "${gpu_req}" == "true" ]] && echo "  GPU         : Required"
+        [[ "${gpu_rec}" == "true" ]] && echo "  GPU         : Recommended"
+        echo "  Ports       :"
+        jq -r '.ports | to_entries[] | "    \(.key): \(.value)"' "${meta}" 2>/dev/null
+        echo "  Services    :"
+        jq -r '.services[]? | "    - \(.)"' "${meta}" 2>/dev/null
+        echo ""
+        if [[ -f "${MODULES_DIR}/${mod}.enabled" ]]; then echo "  Status: ENABLED"; else echo "  Status: DISABLED"; fi
+        local compose="${CLOVERSTACK_ROOT}/modules/${mod}/docker-compose.yml"
+        if [[ -f "${compose}" ]]; then
+            local running=$(docker compose -f "${compose}" ps --status running 2>/dev/null | tail -n +2 | wc -l)
+            echo "  Running containers: ${running}"
+        fi
+        echo ""
+    else
+        err "No module metadata found for: ${mod}"
+        err "Check available modules: cloverstack-ctl list"
+    fi
+}
+
 cmd_list() {
     echo ""
     echo "Available CloverStack Modules"
@@ -195,7 +233,7 @@ case "${COMMAND}" in
     restart)    [[ -n "${MODULE}" ]] && cmd_restart "${MODULE}" || usage ;;
     logs)       [[ -n "${MODULE}" ]] && cmd_logs "${MODULE}" || usage ;;
     list)       cmd_list ;;
-    info)       [[ -n "${MODULE}" ]] && log "Info for ${MODULE} (TODO)" || usage ;;
+    info)       [[ -n "${MODULE}" ]] && cmd_info "${MODULE}" || usage ;;
     market)
         # Delegate to clovermarket-ctl
         shift

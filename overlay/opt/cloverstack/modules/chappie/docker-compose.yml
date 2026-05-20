@@ -1,0 +1,28 @@
+# CloverStack Module: Chappie AI — AI assistant (Ollama + Open WebUI)
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: chappie-webui
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      WEBUI_SECRET_KEY: ${CHAPPIE_SECRET:-cloverstack-chappie-secret}
+      WEBUI_NAME: "Chappie AI"
+      ENABLE_SIGNUP: ${CHAPPIE_SIGNUP:-true}
+      DEFAULT_MODELS: ${CHAPPIE_DEFAULT_MODEL:-phi3:mini}
+      ENABLE_RAG_WEB_SEARCH: true
+    ports: ["8083:8080"]
+    volumes: [chappie-data:/app/backend/data]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chappie.rule=PathPrefix(`/chappie`)"
+      - "traefik.http.services.chappie.loadbalancer.server.port=8080"
+      - "cloverstack.module=chappie"
+
+volumes:
+  chappie-data:
+
+networks:
+  cloverstack: { external: true }

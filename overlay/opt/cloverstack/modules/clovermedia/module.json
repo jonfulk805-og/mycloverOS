@@ -1,0 +1,22 @@
+{
+  "name": "clovermedia",
+  "display_name": "CloverMedia",
+  "description": "Smart TV, streaming, and music \u2014 Jellyfin + Navidrome",
+  "version": "1.0.0",
+  "category": "media",
+  "ports": {
+    "jellyfin": 8096,
+    "navidrome": 4533,
+    "dlna": 1900
+  },
+  "url_path": "/media",
+  "upstream": "Jellyfin + Navidrome",
+  "upstream_license": "GPL-2.0 + GPL-3.0",
+  "min_ram_mb": 1024,
+  "min_disk_gb": 10,
+  "default_enabled": false,
+  "services": [
+    "jellyfin",
+    "navidrome"
+  ]
+}

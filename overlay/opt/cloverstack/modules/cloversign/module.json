@@ -1,0 +1,20 @@
+{
+  "name": "cloversign",
+  "display_name": "CloverSign",
+  "description": "Digital signage management",
+  "version": "1.0.0",
+  "category": "display",
+  "ports": {
+    "web": 8084
+  },
+  "url_path": "/signage",
+  "upstream": "Anthias",
+  "upstream_license": "AGPL-3.0",
+  "min_ram_mb": 512,
+  "min_disk_gb": 5,
+  "default_enabled": false,
+  "services": [
+    "anthias-server",
+    "anthias-viewer"
+  ]
+}

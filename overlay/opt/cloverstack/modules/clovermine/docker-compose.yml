@@ -1,0 +1,37 @@
+# CloverStack Module: CloverMine — Crypto mining, opt-in (XMRig)
+services:
+  xmrig:
+    image: metal3d/xmrig:latest
+    container_name: clovermine-xmrig
+    restart: unless-stopped
+    environment:
+      POOL_URL: ${MINE_POOL:-pool.supportxmr.com:443}
+      POOL_USER: ${MINE_WALLET:-YOUR_WALLET_ADDRESS}
+      POOL_PASS: ${MINE_WORKER:-cloverstack}
+      DONATE_LEVEL: ${MINE_DONATE:-1}
+    deploy:
+      resources:
+        limits:
+          cpus: "${MINE_CPU_LIMIT:-0.50}"
+    networks: [cloverstack]
+    labels:
+      - "cloverstack.module=clovermine"
+      - "cloverstack.opt-in=true"
+
+  clovermine-dashboard:
+    image: nginx:alpine
+    container_name: clovermine-dashboard
+    restart: unless-stopped
+    ports: ["8086:80"]
+    volumes: [clovermine-dashboard-html:/usr/share/nginx/html:ro]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.clovermine.rule=PathPrefix(`/mine`)"
+      - "traefik.http.services.clovermine.loadbalancer.server.port=80"
+
+volumes:
+  clovermine-dashboard-html:
+
+networks:
+  cloverstack: { external: true }

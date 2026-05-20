@@ -1,0 +1,23 @@
+{
+  "name": "clovermesh",
+  "display_name": "CloverMesh",
+  "description": "Distributed WireGuard mesh networking",
+  "version": "1.0.0",
+  "category": "networking",
+  "ports": {
+    "api": 8091,
+    "ui": 8092,
+    "wireguard": 51821
+  },
+  "url_path": "/mesh",
+  "upstream": "Netmaker",
+  "upstream_license": "SSPL",
+  "min_ram_mb": 512,
+  "min_disk_gb": 5,
+  "default_enabled": false,
+  "services": [
+    "netmaker-server",
+    "netmaker-mq",
+    "netmaker-ui"
+  ]
+}

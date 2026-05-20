@@ -1,0 +1,41 @@
+# CloverStack Module: CloverGuard — DNS filter + web proxy (Pi-hole + Squid)
+services:
+  pihole:
+    image: pihole/pihole:latest
+    container_name: cloverguard-pihole
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-America/Los_Angeles}
+      WEBPASSWORD: ${GUARD_PASSWORD:-cloverguard}
+      PIHOLE_DNS_: "1.1.1.1;1.0.0.1"
+      DNSMASQ_LISTENING: all
+    ports: ["53:53/tcp", "53:53/udp", "8085:80"]
+    volumes:
+      - cloverguard-pihole-etc:/etc/pihole
+      - cloverguard-pihole-dnsmasq:/etc/dnsmasq.d
+    networks: [cloverstack]
+    cap_add: [NET_ADMIN]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloverguard.rule=PathPrefix(`/guard`)"
+      - "traefik.http.services.cloverguard.loadbalancer.server.port=80"
+      - "cloverstack.module=cloverguard"
+
+  squid:
+    image: ubuntu/squid:latest
+    container_name: cloverguard-squid
+    restart: unless-stopped
+    ports: ["3128:3128"]
+    volumes:
+      - cloverguard-squid-cache:/var/spool/squid
+      - cloverguard-squid-logs:/var/log/squid
+    networks: [cloverstack]
+
+volumes:
+  cloverguard-pihole-etc:
+  cloverguard-pihole-dnsmasq:
+  cloverguard-squid-cache:
+  cloverguard-squid-logs:
+
+networks:
+  cloverstack: { external: true }

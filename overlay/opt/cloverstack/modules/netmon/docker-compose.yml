@@ -1,0 +1,77 @@
+# CloverStack Module: NetMon — Network monitoring (Zabbix)
+services:
+  zabbix-postgres:
+    image: postgres:16-alpine
+    container_name: netmon-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${NETMON_DB_PASSWORD:-cloverstack-netmon}
+    volumes:
+      - netmon-postgres-data:/var/lib/postgresql/data
+    networks: [cloverstack]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:ubuntu-7.0-latest
+    container_name: netmon-server
+    restart: unless-stopped
+    depends_on:
+      zabbix-postgres: { condition: service_healthy }
+    environment:
+      DB_SERVER_HOST: zabbix-postgres
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${NETMON_DB_PASSWORD:-cloverstack-netmon}
+      ZBX_CACHESIZE: 128M
+    ports: ["10051:10051"]
+    volumes: [netmon-server-data:/var/lib/zabbix]
+    networks: [cloverstack]
+    labels:
+      - "cloverstack.module=netmon"
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:ubuntu-7.0-latest
+    container_name: netmon-web
+    restart: unless-stopped
+    depends_on: [zabbix-server]
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: zabbix-postgres
+      POSTGRES_DB: zabbix
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${NETMON_DB_PASSWORD:-cloverstack-netmon}
+      PHP_TZ: ${TZ:-America/Los_Angeles}
+    ports: ["8081:8080"]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.netmon.rule=PathPrefix(`/netmon`)"
+      - "traefik.http.services.netmon.loadbalancer.server.port=8080"
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:ubuntu-7.0-latest
+    container_name: netmon-agent
+    restart: unless-stopped
+    depends_on: [zabbix-server]
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_HOSTNAME: cloverstack-host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    privileged: true
+    networks: [cloverstack]
+
+volumes:
+  netmon-postgres-data:
+  netmon-server-data:
+
+networks:
+  cloverstack: { external: true }

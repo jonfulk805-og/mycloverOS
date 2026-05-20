@@ -1,0 +1,21 @@
+{
+  "name": "clovermesh-radio",
+  "display_name": "CloverMesh Radio",
+  "description": "LoRa mesh communications via Meshtastic",
+  "version": "1.0.0",
+  "category": "communications",
+  "ports": {
+    "web": 8093,
+    "mqtt": 1884
+  },
+  "url_path": "/radio",
+  "upstream": "Meshtastic",
+  "upstream_license": "GPL-3.0",
+  "min_ram_mb": 256,
+  "min_disk_gb": 2,
+  "default_enabled": false,
+  "services": [
+    "meshtastic-web",
+    "meshtastic-mqtt"
+  ]
+}

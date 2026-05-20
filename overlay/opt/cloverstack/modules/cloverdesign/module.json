@@ -1,0 +1,20 @@
+{
+  "name": "cloverdesign",
+  "display_name": "CloverDesign",
+  "description": "AI-powered design studio",
+  "version": "1.0.0",
+  "category": "ai",
+  "ports": {
+    "web": 8088
+  },
+  "url_path": "/design",
+  "upstream": "ComfyUI",
+  "upstream_license": "GPL-3.0",
+  "min_ram_mb": 4096,
+  "min_disk_gb": 50,
+  "default_enabled": false,
+  "gpu_required": true,
+  "services": [
+    "comfyui"
+  ]
+}

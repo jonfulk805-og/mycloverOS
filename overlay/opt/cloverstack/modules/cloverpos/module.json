@@ -1,0 +1,24 @@
+{
+  "name": "cloverpos",
+  "display_name": "CloverPOS",
+  "description": "Full-featured point of sale and ERP",
+  "version": "1.0.0",
+  "category": "business",
+  "ports": {
+    "web": 8087
+  },
+  "url_path": "/pos",
+  "upstream": "ERPNext v15",
+  "upstream_license": "GPL-3.0",
+  "min_ram_mb": 4096,
+  "min_disk_gb": 20,
+  "default_enabled": false,
+  "services": [
+    "erpnext",
+    "erpnext-worker",
+    "erpnext-scheduler",
+    "erpnext-mariadb",
+    "erpnext-redis-cache",
+    "erpnext-redis-queue"
+  ]
+}

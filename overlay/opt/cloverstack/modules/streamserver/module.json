@@ -1,0 +1,23 @@
+{
+  "name": "streamserver",
+  "display_name": "StreamServer",
+  "description": "Self-hosted live streaming with multi-protocol support",
+  "version": "1.0.0",
+  "category": "media",
+  "ports": {
+    "web": 8094,
+    "rtmp": 1935,
+    "rtsp": 8555,
+    "srt": 9710
+  },
+  "url_path": "/stream",
+  "upstream": "Owncast + MediaMTX",
+  "upstream_license": "MIT",
+  "min_ram_mb": 1024,
+  "min_disk_gb": 20,
+  "default_enabled": false,
+  "services": [
+    "owncast",
+    "mediamtx"
+  ]
+}

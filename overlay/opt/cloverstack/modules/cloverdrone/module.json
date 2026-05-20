@@ -1,0 +1,23 @@
+{
+  "name": "cloverdrone",
+  "display_name": "CloverDrone",
+  "description": "UAV control, mission planning, and video relay",
+  "version": "1.0.0",
+  "category": "robotics",
+  "ports": {
+    "web": 8090,
+    "mavlink": 14550,
+    "rtsp": 8554
+  },
+  "url_path": "/drone",
+  "upstream": "MAVProxy + MediaMTX",
+  "upstream_license": "GPL-3.0 + MIT",
+  "min_ram_mb": 1024,
+  "min_disk_gb": 5,
+  "default_enabled": false,
+  "services": [
+    "mavproxy",
+    "cloverdrone-web",
+    "cloverdrone-video"
+  ]
+}
