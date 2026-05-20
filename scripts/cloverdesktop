@@ -1,0 +1,977 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cloverdesktop — Containerized Desktop Manager for mycloverOS
+# Launch, swap, export, and sell desktop environments as Docker containers
+#
+# Part of CloverStack | MCTVS Creator Market Integration
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+DESKTOP_ROOT="/opt/cloverstack/modules/cloverdesktop"
+TEMPLATES_DIR="${DESKTOP_ROOT}/templates"
+RUNNING_DIR="${DESKTOP_ROOT}/running"
+EXPORTS_DIR="${DESKTOP_ROOT}/exports"
+MCTVS_DIR="${DESKTOP_ROOT}/mctvs"
+PORTAINER_TEMPLATES="${DESKTOP_ROOT}/portainer-templates.json"
+LICENSE_DIR="/var/lib/cloverdesktop/licenses"
+CONFIG_FILE="/etc/myclover/cloverdesktop.conf"
+LOG_FILE="/var/log/cloverstack/cloverdesktop.log"
+MACHINE_ID_FILE="/etc/myclover/machine-id"
+
+# MCTVS Registry
+MCTVS_REGISTRY="${MCTVS_REGISTRY:-https://market.myclover.tech/api/v1}"
+MCTVS_DESKTOP_CATALOG="${MCTVS_DIR}/catalog.json"
+
+# Defaults
+DEFAULT_DESKTOP="xfce"
+DEFAULT_PORT=6901
+DEFAULT_VNC_PORT=5901
+DEFAULT_RESOLUTION="1920x1080"
+
+# --- Colors ------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[cloverdesktop]${NC} $*"; echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "${LOG_FILE}" 2>/dev/null || true; }
+warn() { echo -e "${YELLOW}[cloverdesktop]${NC} $*"; }
+err()  { echo -e "${RED}[cloverdesktop]${NC} $*" >&2; }
+info() { echo -e "${CYAN}[cloverdesktop]${NC} $*"; }
+
+# --- Helpers -----------------------------------------------------------------
+
+ensure_dirs() {
+    mkdir -p "${RUNNING_DIR}" "${EXPORTS_DIR}" "${LICENSE_DIR}" "${MCTVS_DIR}"
+    mkdir -p "$(dirname "${LOG_FILE}")"
+}
+
+get_machine_id() {
+    if [[ -f "${MACHINE_ID_FILE}" ]]; then
+        cat "${MACHINE_ID_FILE}"
+    else
+        cat /etc/machine-id 2>/dev/null || uuidgen
+    fi
+}
+
+get_next_port() {
+    local base_port="${DEFAULT_PORT}"
+    local port="${base_port}"
+    while docker ps --format '{{.Ports}}' 2>/dev/null | grep -q ":${port}->"; do
+        port=$((port + 1))
+    done
+    echo "${port}"
+}
+
+get_next_vnc_port() {
+    local base_port="${DEFAULT_VNC_PORT}"
+    local port="${base_port}"
+    while docker ps --format '{{.Ports}}' 2>/dev/null | grep -q ":${port}->"; do
+        port=$((port + 1))
+    done
+    echo "${port}"
+}
+
+container_name_for() {
+    local desktop_id="$1"
+    local instance="${2:-default}"
+    echo "cloverdesktop-${desktop_id}-${instance}"
+}
+
+# --- Built-in Desktop Templates ---------------------------------------------
+
+declare -A DESKTOP_IMAGES=(
+    [xfce]="lscr.io/linuxserver/webtop:debian-xfce"
+    [kde]="lscr.io/linuxserver/webtop:debian-kde"
+    [mate]="lscr.io/linuxserver/webtop:debian-mate"
+    [i3]="lscr.io/linuxserver/webtop:debian-i3"
+    [openbox]="lscr.io/linuxserver/webtop:debian-openbox"
+    [icewm]="lscr.io/linuxserver/webtop:debian-icewm"
+    [budgie]="lscr.io/linuxserver/webtop:ubuntu-budgie"
+    [xfce-alpine]="lscr.io/linuxserver/webtop:alpine-xfce"
+    [kde-alpine]="lscr.io/linuxserver/webtop:alpine-kde"
+    [kasm-desktop]="kasmweb/desktop:1.15.0"
+    [kasm-chrome]="kasmweb/chrome:1.15.0"
+    [kasm-firefox]="kasmweb/firefox:1.15.0"
+)
+
+declare -A DESKTOP_NAMES=(
+    [xfce]="XFCE Desktop"
+    [kde]="KDE Plasma Desktop"
+    [mate]="MATE Desktop"
+    [i3]="i3 Tiling WM"
+    [openbox]="Openbox Desktop"
+    [icewm]="IceWM Desktop"
+    [budgie]="Budgie Desktop"
+    [xfce-alpine]="XFCE Desktop (Alpine, lightweight)"
+    [kde-alpine]="KDE Plasma (Alpine, lightweight)"
+    [kasm-desktop]="Kasm Full Desktop (GPU-ready)"
+    [kasm-chrome]="Kasm Chrome Browser"
+    [kasm-firefox]="Kasm Firefox Browser"
+)
+
+declare -A DESKTOP_TIERS=(
+    [xfce]="free"
+    [kde]="free"
+    [mate]="free"
+    [i3]="free"
+    [openbox]="free"
+    [icewm]="free"
+    [budgie]="free"
+    [xfce-alpine]="free"
+    [kde-alpine]="free"
+    [kasm-desktop]="premium"
+    [kasm-chrome]="premium"
+    [kasm-firefox]="premium"
+)
+
+# =============================================================================
+# COMMANDS
+# =============================================================================
+
+cmd_list() {
+    echo ""
+    echo -e "${BOLD}  🖥️  CloverDesktop — Available Desktops${NC}"
+    echo -e "${DIM}  ─────────────────────────────────────────────────────────${NC}"
+    echo ""
+
+    printf "  ${BOLD}%-16s %-35s %-10s${NC}\n" "ID" "NAME" "TIER"
+    echo -e "  ${DIM}────────────────────────────────────────────────────────${NC}"
+
+    for id in $(echo "${!DESKTOP_NAMES[@]}" | tr ' ' '\n' | sort); do
+        local name="${DESKTOP_NAMES[$id]}"
+        local tier="${DESKTOP_TIERS[$id]}"
+        local tier_color="${GREEN}"
+        [[ "$tier" == "premium" ]] && tier_color="${MAGENTA}"
+        printf "  %-16s %-35s ${tier_color}%-10s${NC}\n" "$id" "$name" "$tier"
+    done
+
+    echo ""
+
+    # Show MCTVS creator desktops
+    if [[ -f "${MCTVS_DESKTOP_CATALOG}" ]]; then
+        local count
+        count=$(python3 -c "import json; d=json.load(open('${MCTVS_DESKTOP_CATALOG}')); print(len(d.get('desktops',[])))" 2>/dev/null || echo "0")
+        if [[ "$count" -gt "0" ]]; then
+            echo -e "  ${BOLD}🛒 MCTVS Creator Market Desktops:${NC} ${count} available"
+            echo -e "  Run ${CYAN}cloverdesktop market browse${NC} to see creator desktops"
+            echo ""
+        fi
+    fi
+
+    # Show running desktops
+    echo -e "  ${BOLD}🟢 Running Desktops:${NC}"
+    local found=false
+    while IFS= read -r line; do
+        if echo "$line" | grep -q "cloverdesktop-"; then
+            local cname port status
+            cname=$(echo "$line" | awk '{print $1}')
+            status=$(echo "$line" | awk '{print $2}')
+            port=$(docker port "$cname" 3000 2>/dev/null | head -1 | cut -d: -f2 || echo "?")
+            echo -e "    ${GREEN}●${NC} ${cname}  →  https://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):${port}"
+            found=true
+        fi
+    done < <(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null || true)
+
+    if [[ "$found" == "false" ]]; then
+        echo -e "    ${DIM}No desktops running. Start one with: cloverdesktop start xfce${NC}"
+    fi
+    echo ""
+}
+
+cmd_start() {
+    local desktop_id="${1:-$DEFAULT_DESKTOP}"
+    local instance="${2:-default}"
+    local port="${3:-}"
+    local resolution="${RESOLUTION:-$DEFAULT_RESOLUTION}"
+    local password="${DESKTOP_PASSWORD:-}"
+    local cname
+    cname=$(container_name_for "$desktop_id" "$instance")
+
+    ensure_dirs
+
+    # Check if already running
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${cname}$"; then
+        local existing_port
+        existing_port=$(docker port "$cname" 3000 2>/dev/null | head -1 | cut -d: -f2 || echo "?")
+        warn "Desktop '${desktop_id}' (instance: ${instance}) is already running"
+        info "Access at: https://$(hostname -I 2>/dev/null | awk '{print $1}'):${existing_port}"
+        return 0
+    fi
+
+    # Check if it's a built-in or MCTVS desktop
+    local image=""
+    if [[ -n "${DESKTOP_IMAGES[$desktop_id]+x}" ]]; then
+        image="${DESKTOP_IMAGES[$desktop_id]}"
+    elif [[ -f "${MCTVS_DIR}/installed/${desktop_id}/manifest.json" ]]; then
+        # MCTVS Creator Desktop — check license
+        if ! verify_license "$desktop_id"; then
+            err "License required for '${desktop_id}'. Purchase at: https://market.myclover.tech/desktops/${desktop_id}"
+            return 1
+        fi
+        image=$(python3 -c "import json; print(json.load(open('${MCTVS_DIR}/installed/${desktop_id}/manifest.json'))['image'])" 2>/dev/null)
+    elif [[ -f "${TEMPLATES_DIR}/${desktop_id}/docker-compose.yml" ]]; then
+        # Custom template with compose file
+        cd "${TEMPLATES_DIR}/${desktop_id}"
+        WEB_PORT="${port:-$(get_next_port)}" RESOLUTION="${resolution}" docker compose up -d
+        log "Started custom desktop '${desktop_id}' from compose template"
+        return 0
+    else
+        err "Unknown desktop: '${desktop_id}'"
+        err "Run 'cloverdesktop list' to see available desktops"
+        return 1
+    fi
+
+    [[ -z "$port" ]] && port=$(get_next_port)
+    local vnc_port
+    vnc_port=$(get_next_vnc_port)
+
+    log "Starting ${DESKTOP_NAMES[$desktop_id]:-$desktop_id} (${image})..."
+    log "Web port: ${port} | VNC port: ${vnc_port} | Resolution: ${resolution}"
+
+    # Determine run args based on image type
+    local docker_args=(
+        -d
+        --name "$cname"
+        --restart unless-stopped
+        --shm-size="2g"
+        --network cloverstack
+        -e "PUID=1000"
+        -e "PGID=1000"
+        -e "TZ=$(cat /etc/timezone 2>/dev/null || echo UTC)"
+        -e "CUSTOM_PORT=3000"
+        -e "RESOLUTION=${resolution}"
+        -v "cloverdesktop-${desktop_id}-${instance}-home:/config"
+        -v "/dev/shm:/dev/shm"
+    )
+
+    # Add password protection if set
+    if [[ -n "$password" ]]; then
+        docker_args+=(-e "PASSWORD=${password}")
+    fi
+
+    # GPU passthrough if available
+    if [[ -d /dev/dri ]]; then
+        docker_args+=(--device /dev/dri:/dev/dri)
+        log "GPU passthrough enabled (/dev/dri)"
+    fi
+
+    # Port mapping
+    docker_args+=(-p "${port}:3000")
+
+    # Kasm images use different port mapping
+    if [[ "$image" == kasmweb/* ]]; then
+        docker_args=()
+        docker_args=(
+            -d
+            --name "$cname"
+            --restart unless-stopped
+            --shm-size="2g"
+            --network cloverstack
+            -e "VNC_PW=${password:-changeme}"
+            -v "cloverdesktop-${desktop_id}-${instance}-home:/home/kasm-user"
+            -p "${port}:6901"
+        )
+        if [[ -d /dev/dri ]]; then
+            docker_args+=(--device /dev/dri:/dev/dri)
+        fi
+    fi
+
+    docker pull "$image" 2>&1 | tail -1
+    docker run "${docker_args[@]}" "$image"
+
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost')
+
+    echo ""
+    log "═══════════════════════════════════════════════════"
+    log "  🖥️  Desktop Ready!"
+    log ""
+    log "  Desktop:    ${DESKTOP_NAMES[$desktop_id]:-$desktop_id}"
+    log "  Instance:   ${instance}"
+    log "  Container:  ${cname}"
+    log ""
+    log "  🌐 Browser:  https://${ip}:${port}"
+    if [[ -n "$password" ]]; then
+        log "  🔑 Password:  (set via DESKTOP_PASSWORD)"
+    fi
+    log ""
+    log "  📦 Data vol:  cloverdesktop-${desktop_id}-${instance}-home"
+    log "═══════════════════════════════════════════════════"
+    echo ""
+
+    # Save running state
+    cat > "${RUNNING_DIR}/${cname}.json" <<EOF
+{
+    "desktop_id": "${desktop_id}",
+    "instance": "${instance}",
+    "container": "${cname}",
+    "image": "${image}",
+    "port": ${port},
+    "resolution": "${resolution}",
+    "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "gpu_passthrough": $([ -d /dev/dri ] && echo true || echo false)
+}
+EOF
+}
+
+cmd_stop() {
+    local desktop_id="${1:-}"
+    local instance="${2:-default}"
+
+    if [[ -z "$desktop_id" ]]; then
+        err "Usage: cloverdesktop stop <desktop-id> [instance]"
+        return 1
+    fi
+
+    local cname
+    cname=$(container_name_for "$desktop_id" "$instance")
+
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${cname}$"; then
+        docker stop "$cname" && docker rm "$cname"
+        rm -f "${RUNNING_DIR}/${cname}.json"
+        log "Stopped and removed desktop '${desktop_id}' (instance: ${instance})"
+    else
+        warn "Desktop '${desktop_id}' (instance: ${instance}) is not running"
+    fi
+}
+
+cmd_stop_all() {
+    log "Stopping all CloverDesktop containers..."
+    for container in $(docker ps --format '{{.Names}}' 2>/dev/null | grep "^cloverdesktop-" || true); do
+        docker stop "$container" && docker rm "$container"
+        rm -f "${RUNNING_DIR}/${container}.json"
+        log "  Stopped: ${container}"
+    done
+    log "All desktops stopped."
+}
+
+cmd_restart() {
+    local desktop_id="${1:-}"
+    local instance="${2:-default}"
+    cmd_stop "$desktop_id" "$instance"
+    cmd_start "$desktop_id" "$instance"
+}
+
+cmd_swap() {
+    local new_desktop="${1:-}"
+    local instance="${2:-default}"
+
+    if [[ -z "$new_desktop" ]]; then
+        err "Usage: cloverdesktop swap <new-desktop-id> [instance]"
+        return 1
+    fi
+
+    # Find the currently running desktop for this instance
+    for f in "${RUNNING_DIR}"/*-"${instance}.json" 2>/dev/null; do
+        if [[ -f "$f" ]]; then
+            local old_id
+            old_id=$(python3 -c "import json; print(json.load(open('$f'))['desktop_id'])" 2>/dev/null)
+            if [[ -n "$old_id" ]]; then
+                local old_port
+                old_port=$(python3 -c "import json; print(json.load(open('$f'))['port'])" 2>/dev/null)
+                log "Swapping ${old_id} → ${new_desktop} (keeping port ${old_port})"
+                cmd_stop "$old_id" "$instance"
+                cmd_start "$new_desktop" "$instance" "$old_port"
+                return 0
+            fi
+        fi
+    done
+
+    # No existing desktop, just start the new one
+    cmd_start "$new_desktop" "$instance"
+}
+
+# =============================================================================
+# EXPORT / IMPORT — Portable Desktops
+# =============================================================================
+
+cmd_export() {
+    local desktop_id="${1:-}"
+    local instance="${2:-default}"
+    local output_name="${3:-}"
+
+    if [[ -z "$desktop_id" ]]; then
+        err "Usage: cloverdesktop export <desktop-id> [instance] [output-name]"
+        return 1
+    fi
+
+    ensure_dirs
+
+    local cname
+    cname=$(container_name_for "$desktop_id" "$instance")
+    [[ -z "$output_name" ]] && output_name="${desktop_id}-${instance}-$(date +%Y%m%d)"
+
+    # Check if container exists (running or stopped)
+    if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${cname}$"; then
+        err "Container '${cname}' not found. Start or run the desktop first."
+        return 1
+    fi
+
+    local was_running=false
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${cname}$"; then
+        was_running=true
+        log "Pausing desktop for clean export..."
+        docker pause "$cname"
+    fi
+
+    log "Exporting desktop '${desktop_id}' (instance: ${instance})..."
+
+    # 1. Commit the container to an image
+    local export_image="cloverdesktop-export/${output_name}:latest"
+    docker commit "$cname" "$export_image"
+
+    # 2. Save the image to a tar archive
+    local export_file="${EXPORTS_DIR}/${output_name}.tar"
+    docker save "$export_image" -o "$export_file"
+
+    # 3. Export the data volume
+    local volume_name="cloverdesktop-${desktop_id}-${instance}-home"
+    local volume_file="${EXPORTS_DIR}/${output_name}-data.tar.gz"
+    docker run --rm -v "${volume_name}:/source:ro" -v "${EXPORTS_DIR}:/export" \
+        alpine tar czf "/export/${output_name}-data.tar.gz" -C /source .
+
+    # 4. Create manifest
+    cat > "${EXPORTS_DIR}/${output_name}.manifest.json" <<EOF
+{
+    "format_version": "1.0",
+    "desktop_id": "${desktop_id}",
+    "instance": "${instance}",
+    "name": "${DESKTOP_NAMES[$desktop_id]:-$desktop_id}",
+    "exported_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "source_machine": "$(get_machine_id)",
+    "image_file": "${output_name}.tar",
+    "data_file": "${output_name}-data.tar.gz",
+    "image_tag": "${export_image}",
+    "resolution": "$(python3 -c "import json; print(json.load(open('${RUNNING_DIR}/${cname}.json')).get('resolution','${DEFAULT_RESOLUTION}'))" 2>/dev/null || echo "${DEFAULT_RESOLUTION}")"
+}
+EOF
+
+    # 5. Bundle everything into a single .cloverdesktop archive
+    local bundle="${EXPORTS_DIR}/${output_name}.cloverdesktop"
+    cd "${EXPORTS_DIR}"
+    tar cf "${bundle}" \
+        "${output_name}.tar" \
+        "${output_name}-data.tar.gz" \
+        "${output_name}.manifest.json"
+
+    # Compress with zstd if available
+    if command -v zstd &>/dev/null; then
+        zstd -T0 -10 --rm "${bundle}" -o "${bundle}.zst"
+        bundle="${bundle}.zst"
+    fi
+
+    # Resume if was running
+    if [[ "$was_running" == "true" ]]; then
+        docker unpause "$cname"
+        log "Desktop resumed."
+    fi
+
+    # Cleanup intermediate files
+    rm -f "${EXPORTS_DIR}/${output_name}.tar" \
+          "${EXPORTS_DIR}/${output_name}-data.tar.gz" \
+          "${EXPORTS_DIR}/${output_name}.manifest.json"
+
+    local size
+    size=$(du -h "$bundle" | cut -f1)
+
+    echo ""
+    log "═══════════════════════════════════════════════════"
+    log "  📦 Desktop Exported!"
+    log ""
+    log "  File:  ${bundle}"
+    log "  Size:  ${size}"
+    log ""
+    log "  Import on another CloverOS:"
+    log "    cloverdesktop import ${bundle}"
+    log ""
+    log "  Publish to MCTVS Creator Market:"
+    log "    cloverdesktop publish ${bundle}"
+    log "═══════════════════════════════════════════════════"
+    echo ""
+}
+
+cmd_import() {
+    local bundle_file="${1:-}"
+    local instance="${2:-imported}"
+
+    if [[ -z "$bundle_file" ]] || [[ ! -f "$bundle_file" ]]; then
+        err "Usage: cloverdesktop import <file.cloverdesktop[.zst]> [instance-name]"
+        return 1
+    fi
+
+    ensure_dirs
+
+    local work_dir
+    work_dir=$(mktemp -d /tmp/cloverdesktop-import.XXXXXX)
+
+    # Decompress if zstd
+    local archive="$bundle_file"
+    if [[ "$bundle_file" == *.zst ]]; then
+        log "Decompressing..."
+        zstd -d "$bundle_file" -o "${work_dir}/bundle.cloverdesktop"
+        archive="${work_dir}/bundle.cloverdesktop"
+    fi
+
+    # Extract bundle
+    tar xf "$archive" -C "$work_dir"
+
+    # Read manifest
+    local manifest
+    manifest=$(find "$work_dir" -name "*.manifest.json" | head -1)
+    if [[ -z "$manifest" ]]; then
+        err "Invalid .cloverdesktop bundle — no manifest found"
+        rm -rf "$work_dir"
+        return 1
+    fi
+
+    local desktop_id image_file data_file image_tag
+    desktop_id=$(python3 -c "import json; print(json.load(open('$manifest'))['desktop_id'])")
+    image_file=$(python3 -c "import json; print(json.load(open('$manifest'))['image_file'])")
+    data_file=$(python3 -c "import json; print(json.load(open('$manifest'))['data_file'])")
+    image_tag=$(python3 -c "import json; print(json.load(open('$manifest'))['image_tag'])")
+
+    log "Importing desktop: ${desktop_id} (instance: ${instance})"
+
+    # Load the Docker image
+    log "Loading container image..."
+    docker load -i "${work_dir}/${image_file}"
+
+    # Create and populate the data volume
+    local volume_name="cloverdesktop-${desktop_id}-${instance}-home"
+    docker volume create "$volume_name" 2>/dev/null || true
+    log "Restoring desktop data..."
+    docker run --rm -v "${volume_name}:/target" -v "${work_dir}:/import:ro" \
+        alpine sh -c "cd /target && tar xzf /import/${data_file}"
+
+    # Clean up
+    rm -rf "$work_dir"
+
+    log "Desktop '${desktop_id}' imported as instance '${instance}'"
+    log "Start it with: cloverdesktop start ${desktop_id} ${instance}"
+}
+
+# =============================================================================
+# MCTVS CREATOR MARKET — Publish, Browse, Purchase, License
+# =============================================================================
+
+cmd_market_browse() {
+    echo ""
+    echo -e "${BOLD}  🛒 MCTVS Creator Market — Desktop Environments${NC}"
+    echo -e "${DIM}  ─────────────────────────────────────────────────────────${NC}"
+    echo ""
+
+    # Refresh catalog
+    if command -v curl &>/dev/null; then
+        curl -sf "${MCTVS_REGISTRY}/desktops/catalog" -o "${MCTVS_DESKTOP_CATALOG}" 2>/dev/null || true
+    fi
+
+    if [[ ! -f "${MCTVS_DESKTOP_CATALOG}" ]]; then
+        info "No MCTVS desktop catalog found. Check your network connection."
+        info "Registry: ${MCTVS_REGISTRY}"
+        echo ""
+        echo -e "  ${BOLD}Want to be a creator?${NC}"
+        echo -e "  Build a custom desktop → ${CYAN}cloverdesktop export <desktop> → cloverdesktop publish <file>${NC}"
+        echo ""
+        return 0
+    fi
+
+    python3 <<'PYEOF'
+import json, sys
+
+try:
+    with open("MCTVS_DESKTOP_CATALOG_PATH") as f:
+        catalog = json.load(f)
+
+    desktops = catalog.get("desktops", [])
+    if not desktops:
+        print("  No creator desktops available yet.")
+        print("")
+        print("  Be the first! Build a desktop and publish it:")
+        print("    cloverdesktop start xfce → customize → cloverdesktop export xfce → cloverdesktop publish")
+        sys.exit(0)
+
+    print(f"  {'DESKTOP':<25} {'CREATOR':<20} {'PRICE':<12} {'RATING':<8} {'DOWNLOADS':<10}")
+    print(f"  {'─' * 75}")
+
+    for d in desktops:
+        name = d.get("name", "Unknown")[:24]
+        creator = d.get("creator", "Unknown")[:19]
+        price = d.get("price", "Free")
+        if isinstance(price, (int, float)) and price > 0:
+            price = f"${price:.2f}"
+        else:
+            price = "Free"
+        rating = f"★{d.get('rating', 0):.1f}"
+        downloads = str(d.get("downloads", 0))
+        print(f"  {name:<25} {creator:<20} {price:<12} {rating:<8} {downloads:<10}")
+
+    print("")
+except Exception as e:
+    print(f"  Error reading catalog: {e}")
+PYEOF
+}
+
+cmd_market_publish() {
+    local bundle_file="${1:-}"
+
+    if [[ -z "$bundle_file" ]] || [[ ! -f "$bundle_file" ]]; then
+        err "Usage: cloverdesktop publish <file.cloverdesktop[.zst]>"
+        echo ""
+        echo "Publish your custom desktop to the MCTVS Creator Market."
+        echo ""
+        echo "Steps:"
+        echo "  1. Start a desktop:     cloverdesktop start xfce"
+        echo "  2. Customize it:        Install apps, change themes, add configs"
+        echo "  3. Export it:           cloverdesktop export xfce"
+        echo "  4. Publish it:          cloverdesktop publish <exported-file>"
+        echo ""
+        echo "You'll be prompted for:"
+        echo "  - Desktop name & description"
+        echo "  - Category (Productivity, Creative, Development, Gaming, Business, Education)"
+        echo "  - Pricing (free, one-time, or subscription)"
+        echo "  - MCTVS Creator ID (register at https://market.myclover.tech/creators)"
+        echo ""
+        return 1
+    fi
+
+    ensure_dirs
+
+    echo ""
+    echo -e "${BOLD}  📤 Publish to MCTVS Creator Market${NC}"
+    echo -e "${DIM}  ─────────────────────────────────────${NC}"
+    echo ""
+
+    # Gather metadata
+    read -rp "  Desktop name: " pub_name
+    read -rp "  Description: " pub_desc
+    echo "  Categories: Productivity, Creative, Development, Gaming, Business, Education, Kiosk, Custom"
+    read -rp "  Category: " pub_category
+    echo "  Pricing: free, one-time, or subscription"
+    read -rp "  Pricing model: " pub_pricing
+    local pub_price="0"
+    if [[ "$pub_pricing" != "free" ]]; then
+        read -rp "  Price (USD): " pub_price
+    fi
+    read -rp "  MCTVS Creator ID: " pub_creator_id
+    read -rp "  Screenshot URL (optional): " pub_screenshot
+
+    # Create publish manifest
+    local pub_manifest="${MCTVS_DIR}/publish-$(date +%s).json"
+    cat > "$pub_manifest" <<EOF
+{
+    "name": "${pub_name}",
+    "description": "${pub_desc}",
+    "category": "${pub_category}",
+    "pricing_model": "${pub_pricing}",
+    "price": ${pub_price},
+    "creator_id": "${pub_creator_id}",
+    "screenshot_url": "${pub_screenshot}",
+    "source_machine": "$(get_machine_id)",
+    "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "bundle_file": "$(basename "$bundle_file")",
+    "bundle_size": $(stat --format=%s "$bundle_file" 2>/dev/null || stat -f%z "$bundle_file" 2>/dev/null || echo 0),
+    "revenue_split": {
+        "creator": 70,
+        "myclover_tech": 30
+    }
+}
+EOF
+
+    # Upload to registry
+    log "Uploading desktop to MCTVS Creator Market..."
+
+    if curl -sf -X POST \
+        -H "Content-Type: multipart/form-data" \
+        -F "manifest=@${pub_manifest}" \
+        -F "bundle=@${bundle_file}" \
+        "${MCTVS_REGISTRY}/desktops/publish" \
+        -o /tmp/publish-response.json 2>/dev/null; then
+
+        local listing_url
+        listing_url=$(python3 -c "import json; print(json.load(open('/tmp/publish-response.json')).get('listing_url',''))" 2>/dev/null || echo "")
+
+        echo ""
+        log "═══════════════════════════════════════════════════"
+        log "  ✅ Desktop Published!"
+        log ""
+        log "  Name:     ${pub_name}"
+        log "  Price:    \$${pub_price} (${pub_pricing})"
+        log "  Split:    70% creator / 30% MCT"
+        if [[ -n "$listing_url" ]]; then
+            log "  Listing:  ${listing_url}"
+        fi
+        log ""
+        log "  Buyers will find it at:"
+        log "    cloverdesktop market browse"
+        log "    https://market.myclover.tech/desktops"
+        log "═══════════════════════════════════════════════════"
+        echo ""
+    else
+        warn "Could not reach MCTVS registry (${MCTVS_REGISTRY})"
+        warn "Your desktop bundle and manifest are saved locally:"
+        warn "  Bundle:   ${bundle_file}"
+        warn "  Manifest: ${pub_manifest}"
+        warn ""
+        warn "Upload manually at: https://market.myclover.tech/creators/upload"
+    fi
+}
+
+cmd_market_install() {
+    local desktop_slug="${1:-}"
+
+    if [[ -z "$desktop_slug" ]]; then
+        err "Usage: cloverdesktop market install <desktop-slug>"
+        return 1
+    fi
+
+    ensure_dirs
+
+    log "Fetching desktop '${desktop_slug}' from MCTVS Creator Market..."
+
+    # Check license / payment
+    local license_response
+    license_response=$(curl -sf "${MCTVS_REGISTRY}/desktops/${desktop_slug}/license?machine_id=$(get_machine_id)" 2>/dev/null || echo "{}")
+
+    local licensed
+    licensed=$(python3 -c "import json; print(json.load(open('/dev/stdin')).get('licensed', False))" <<< "$license_response" 2>/dev/null || echo "False")
+
+    if [[ "$licensed" != "True" ]]; then
+        local purchase_url
+        purchase_url=$(python3 -c "import json; print(json.load(open('/dev/stdin')).get('purchase_url', ''))" <<< "$license_response" 2>/dev/null || echo "")
+        err "License required for '${desktop_slug}'"
+        if [[ -n "$purchase_url" ]]; then
+            info "Purchase at: ${purchase_url}"
+        else
+            info "Purchase at: https://market.myclover.tech/desktops/${desktop_slug}"
+        fi
+        return 1
+    fi
+
+    # Download the bundle
+    local download_dir="${MCTVS_DIR}/installed/${desktop_slug}"
+    mkdir -p "$download_dir"
+
+    log "Downloading desktop bundle..."
+    curl -sf "${MCTVS_REGISTRY}/desktops/${desktop_slug}/download?machine_id=$(get_machine_id)" \
+        -o "${download_dir}/desktop.cloverdesktop.zst"
+
+    # Save license
+    echo "$license_response" > "${LICENSE_DIR}/${desktop_slug}.license.json"
+
+    # Import
+    cmd_import "${download_dir}/desktop.cloverdesktop.zst" "${desktop_slug}"
+
+    log "MCTVS desktop '${desktop_slug}' installed!"
+    log "Start with: cloverdesktop start ${desktop_slug} ${desktop_slug}"
+}
+
+verify_license() {
+    local desktop_slug="$1"
+    local license_file="${LICENSE_DIR}/${desktop_slug}.license.json"
+
+    if [[ ! -f "$license_file" ]]; then
+        return 1
+    fi
+
+    # Check expiry for subscriptions
+    local expires licensed
+    licensed=$(python3 -c "import json; print(json.load(open('$license_file')).get('licensed', False))" 2>/dev/null || echo "False")
+    expires=$(python3 -c "import json; print(json.load(open('$license_file')).get('expires_at', ''))" 2>/dev/null || echo "")
+
+    if [[ "$licensed" != "True" ]]; then
+        return 1
+    fi
+
+    # If subscription, check if expired
+    if [[ -n "$expires" ]]; then
+        local now_ts expires_ts
+        now_ts=$(date +%s)
+        expires_ts=$(date -d "$expires" +%s 2>/dev/null || echo "9999999999")
+        if [[ "$now_ts" -gt "$expires_ts" ]]; then
+            # 30-day grace period
+            local grace_expires=$((expires_ts + 2592000))
+            if [[ "$now_ts" -gt "$grace_expires" ]]; then
+                warn "License for '${desktop_slug}' has expired (past 30-day grace period)"
+                return 1
+            else
+                warn "License for '${desktop_slug}' has expired — running in grace period"
+            fi
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# PORTAINER INTEGRATION
+# =============================================================================
+
+cmd_portainer_sync() {
+    log "Syncing desktop templates to Portainer..."
+
+    # Check if Portainer is running
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "portainer"; then
+        err "Portainer is not running. Start it first."
+        return 1
+    fi
+
+    # Copy templates JSON to Portainer's template endpoint
+    if [[ -f "${PORTAINER_TEMPLATES}" ]]; then
+        # Get Portainer URL
+        local portainer_url="https://localhost:9443"
+        info "Desktop templates available at: Portainer → App Templates → Custom Templates"
+        info "Template file: ${PORTAINER_TEMPLATES}"
+        info ""
+        info "To add in Portainer UI:"
+        info "  1. Login at ${portainer_url}"
+        info "  2. Go to: Settings → App Templates"
+        info "  3. Set URL to: file://${PORTAINER_TEMPLATES}"
+        info "  4. Or use: ${MCTVS_REGISTRY}/portainer/templates.json"
+        log "Templates synced."
+    else
+        err "Portainer templates file not found at ${PORTAINER_TEMPLATES}"
+    fi
+}
+
+# =============================================================================
+# STATUS & INFO
+# =============================================================================
+
+cmd_status() {
+    echo ""
+    echo -e "${BOLD}  🖥️  CloverDesktop Status${NC}"
+    echo -e "${DIM}  ─────────────────────────${NC}"
+    echo ""
+
+    local running=0
+    local total_mem=0
+
+    while IFS= read -r container; do
+        if [[ -z "$container" ]]; then continue; fi
+        running=$((running + 1))
+
+        local cname status image ports mem
+        cname=$(echo "$container" | awk -F'|' '{print $1}')
+        status=$(echo "$container" | awk -F'|' '{print $2}')
+        image=$(echo "$container" | awk -F'|' '{print $3}')
+        ports=$(docker port "$cname" 3000 2>/dev/null | head -1 || echo "N/A")
+        mem=$(docker stats --no-stream --format '{{.MemUsage}}' "$cname" 2>/dev/null || echo "N/A")
+
+        echo -e "  ${GREEN}●${NC} ${BOLD}${cname}${NC}"
+        echo -e "    Image:   ${image}"
+        echo -e "    Status:  ${status}"
+        echo -e "    Access:  https://$(hostname -I 2>/dev/null | awk '{print $1}'):$(echo "$ports" | cut -d: -f2)"
+        echo -e "    Memory:  ${mem}"
+        echo ""
+    done < <(docker ps --filter "name=cloverdesktop-" --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null || true)
+
+    if [[ "$running" -eq 0 ]]; then
+        echo -e "  ${DIM}No desktops running.${NC}"
+        echo ""
+        echo -e "  Quick start:  ${CYAN}cloverdesktop start xfce${NC}"
+        echo -e "  Browse:       ${CYAN}cloverdesktop list${NC}"
+    else
+        echo -e "  ${BOLD}Total running: ${running}${NC}"
+    fi
+    echo ""
+}
+
+# =============================================================================
+# HELP
+# =============================================================================
+
+cmd_help() {
+    cat <<EOF
+
+  🖥️  CloverDesktop v${VERSION} — Containerized Desktop Manager
+
+  ${BOLD}USAGE:${NC}
+    cloverdesktop <command> [args...]
+
+  ${BOLD}DESKTOP MANAGEMENT:${NC}
+    list                              Show available desktops (built-in + MCTVS)
+    start  <desktop> [instance] [port] Start a desktop container
+    stop   <desktop> [instance]       Stop a desktop container
+    stop-all                          Stop all running desktops
+    restart <desktop> [instance]      Restart a desktop
+    swap   <new-desktop> [instance]   Swap desktop (same port, new environment)
+    status                            Show running desktop status & resource usage
+
+  ${BOLD}PORTABLE DESKTOPS:${NC}
+    export <desktop> [instance] [name]  Export desktop as portable .cloverdesktop
+    import <file.cloverdesktop> [name]  Import a portable desktop
+
+  ${BOLD}MCTVS CREATOR MARKET:${NC}
+    market browse                     Browse creator desktops for sale
+    market install <slug>             Purchase & install a creator desktop
+    publish <file.cloverdesktop>      Sell your desktop on the MCTVS market
+
+  ${BOLD}PORTAINER INTEGRATION:${NC}
+    portainer-sync                    Sync desktop templates to Portainer
+
+  ${BOLD}ENVIRONMENT VARIABLES:${NC}
+    RESOLUTION=1920x1080             Set desktop resolution
+    DESKTOP_PASSWORD=secret          Set VNC/web password
+    MCTVS_REGISTRY=https://...       Custom MCTVS registry URL
+
+  ${BOLD}EXAMPLES:${NC}
+    cloverdesktop start xfce                    # Launch XFCE in browser
+    cloverdesktop start kde work                # KDE instance named "work"
+    cloverdesktop start i3 dev 6903             # i3 on port 6903
+    DESKTOP_PASSWORD=s3cr3t cloverdesktop start xfce  # Password-protected
+    cloverdesktop swap kde work                 # Swap work desktop from current to KDE
+    cloverdesktop export xfce work my-setup     # Export as portable file
+    cloverdesktop publish my-setup.cloverdesktop # Sell on MCTVS market
+    cloverdesktop market browse                 # Browse creator desktops
+
+EOF
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    ensure_dirs
+
+    local cmd="${1:-help}"
+    shift || true
+
+    case "$cmd" in
+        list|ls)            cmd_list "$@" ;;
+        start|up)           cmd_start "$@" ;;
+        stop|down)          cmd_stop "$@" ;;
+        stop-all)           cmd_stop_all "$@" ;;
+        restart)            cmd_restart "$@" ;;
+        swap)               cmd_swap "$@" ;;
+        status|ps)          cmd_status "$@" ;;
+        export)             cmd_export "$@" ;;
+        import)             cmd_import "$@" ;;
+        publish)            cmd_market_publish "$@" ;;
+        market)
+            local subcmd="${1:-browse}"
+            shift || true
+            case "$subcmd" in
+                browse|list)    cmd_market_browse "$@" ;;
+                install|buy)    cmd_market_install "$@" ;;
+                *)              err "Unknown market command: ${subcmd}" ;;
+            esac
+            ;;
+        portainer-sync)     cmd_portainer_sync "$@" ;;
+        help|--help|-h)     cmd_help ;;
+        version|--version)  echo "CloverDesktop v${VERSION}" ;;
+        *)
+            err "Unknown command: ${cmd}"
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
