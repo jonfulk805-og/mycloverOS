@@ -126,6 +126,23 @@ if [[ -f "/etc/myclover/modules.d/clovermarket.enabled" ]]; then
     fi
 fi
 
+# --- CloverDesktop setup -----------------------------------------------------
+if [[ "${CLOVERDESKTOP_ENABLED:-true}" == "true" ]]; then
+    log "Setting up CloverDesktop..."
+    mkdir -p /opt/cloverstack/modules/cloverdesktop/{templates,running,exports,mctvs/installed}
+    mkdir -p /var/lib/cloverdesktop/licenses
+
+    # Open desktop ports in firewall
+    ufw allow 6901:6920/tcp comment "CloverDesktop" 2>/dev/null || true
+
+    # Sync Portainer templates if Portainer is running
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "portainer"; then
+        log "CloverDesktop Portainer templates available"
+    fi
+
+    log "CloverDesktop ready. Run 'cloverdesktop list' to see available desktops."
+fi
+
 # --- Generate machine ID -----------------------------------------------------
 log "Generating CloverStack machine identity..."
 MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || uuidgen)
