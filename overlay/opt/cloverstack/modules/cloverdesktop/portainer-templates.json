@@ -1,0 +1,248 @@
+{
+  "version": "2",
+  "templates": [
+    {
+      "type": 1,
+      "title": "🖥️ XFCE Desktop (Free)",
+      "description": "Lightweight XFCE desktop environment accessible via web browser. Great for everyday use, remote admin, and thin client setups. ~800MB image.",
+      "categories": ["CloverDesktop", "Free", "Lightweight"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/webtop-logo.png",
+      "image": "lscr.io/linuxserver/webtop:debian-xfce",
+      "name": "cloverdesktop-xfce-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6901:3000/tcp"],
+      "volumes": [
+        {
+          "container": "/config",
+          "bind": "cloverdesktop-xfce-home"
+        },
+        {
+          "container": "/dev/shm",
+          "bind": "/dev/shm"
+        }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6901</b> after deployment. Part of CloverDesktop — swap, export, or sell your custom desktop."
+    },
+    {
+      "type": 1,
+      "title": "🖥️ KDE Plasma Desktop (Free)",
+      "description": "Full-featured KDE Plasma desktop via web browser. Modern, customizable, beautiful. Great for power users. ~1.5GB image.",
+      "categories": ["CloverDesktop", "Free", "Full-featured"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/webtop-logo.png",
+      "image": "lscr.io/linuxserver/webtop:debian-kde",
+      "name": "cloverdesktop-kde-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6902:3000/tcp"],
+      "volumes": [
+        { "container": "/config", "bind": "cloverdesktop-kde-home" },
+        { "container": "/dev/shm", "bind": "/dev/shm" }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6902</b>. KDE Plasma — the most customizable Linux desktop."
+    },
+    {
+      "type": 1,
+      "title": "🖥️ MATE Desktop (Free)",
+      "description": "Traditional MATE desktop environment. Familiar layout, lightweight, stable. Perfect for users coming from Windows. ~900MB image.",
+      "categories": ["CloverDesktop", "Free", "Traditional"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/webtop-logo.png",
+      "image": "lscr.io/linuxserver/webtop:debian-mate",
+      "name": "cloverdesktop-mate-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6903:3000/tcp"],
+      "volumes": [
+        { "container": "/config", "bind": "cloverdesktop-mate-home" },
+        { "container": "/dev/shm", "bind": "/dev/shm" }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6903</b>."
+    },
+    {
+      "type": 1,
+      "title": "⌨️ i3 Tiling WM (Free)",
+      "description": "Ultra-lightweight i3 tiling window manager. Keyboard-driven, developer favorite. Blazing fast. ~500MB image.",
+      "categories": ["CloverDesktop", "Free", "Minimal", "Developer"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/webtop-logo.png",
+      "image": "lscr.io/linuxserver/webtop:debian-i3",
+      "name": "cloverdesktop-i3-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6904:3000/tcp"],
+      "volumes": [
+        { "container": "/config", "bind": "cloverdesktop-i3-home" },
+        { "container": "/dev/shm", "bind": "/dev/shm" }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6904</b>. i3wm — keyboard-driven productivity."
+    },
+    {
+      "type": 1,
+      "title": "🖥️ Openbox Desktop (Free)",
+      "description": "Minimal Openbox window manager. Extremely lightweight, fast boot, low memory. Great for kiosks and thin clients. ~400MB image.",
+      "categories": ["CloverDesktop", "Free", "Minimal", "Kiosk"],
+      "platform": "linux",
+      "image": "lscr.io/linuxserver/webtop:debian-openbox",
+      "name": "cloverdesktop-openbox-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6905:3000/tcp"],
+      "volumes": [
+        { "container": "/config", "bind": "cloverdesktop-openbox-home" },
+        { "container": "/dev/shm", "bind": "/dev/shm" }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6905</b>."
+    },
+    {
+      "type": 1,
+      "title": "🖥️ IceWM Desktop (Free)",
+      "description": "IceWM — lightweight, Windows-like desktop. Fast, familiar, low resources. ~450MB image.",
+      "categories": ["CloverDesktop", "Free", "Lightweight"],
+      "platform": "linux",
+      "image": "lscr.io/linuxserver/webtop:debian-icewm",
+      "name": "cloverdesktop-icewm-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6906:3000/tcp"],
+      "volumes": [
+        { "container": "/config", "bind": "cloverdesktop-icewm-home" },
+        { "container": "/dev/shm", "bind": "/dev/shm" }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6906</b>."
+    },
+    {
+      "type": 1,
+      "title": "🌟 Budgie Desktop (Free)",
+      "description": "Ubuntu Budgie — modern, elegant desktop with a focus on simplicity. ~1.2GB image.",
+      "categories": ["CloverDesktop", "Free", "Modern"],
+      "platform": "linux",
+      "image": "lscr.io/linuxserver/webtop:ubuntu-budgie",
+      "name": "cloverdesktop-budgie-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6907:3000/tcp"],
+      "volumes": [
+        { "container": "/config", "bind": "cloverdesktop-budgie-home" },
+        { "container": "/dev/shm", "bind": "/dev/shm" }
+      ],
+      "env": [
+        { "name": "PUID", "default": "1000", "label": "User ID" },
+        { "name": "PGID", "default": "1000", "label": "Group ID" },
+        { "name": "TZ", "default": "America/Los_Angeles", "label": "Timezone" },
+        { "name": "CUSTOM_PORT", "default": "3000", "label": "Internal web port" },
+        { "name": "PASSWORD", "default": "", "label": "Web access password (optional)" },
+        { "name": "RESOLUTION", "default": "1920x1080", "label": "Desktop resolution" }
+      ],
+      "note": "Access at <b>https://&lt;server-ip&gt;:6907</b>."
+    },
+    {
+      "type": 1,
+      "title": "🎮 Kasm Full Desktop (Premium — GPU)",
+      "description": "KasmVNC full desktop with GPU acceleration, audio streaming, clipboard sync, and file transfers. Enterprise-grade remote desktop. Ideal for gaming, CAD, video editing.",
+      "categories": ["CloverDesktop", "Premium", "GPU", "Enterprise"],
+      "platform": "linux",
+      "image": "kasmweb/desktop:1.15.0",
+      "name": "cloverdesktop-kasm-default",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6908:6901/tcp"],
+      "volumes": [
+        { "container": "/home/kasm-user", "bind": "cloverdesktop-kasm-home" }
+      ],
+      "env": [
+        { "name": "VNC_PW", "default": "changeme", "label": "VNC/Web password" }
+      ],
+      "privileged": false,
+      "note": "Access at <b>https://&lt;server-ip&gt;:6908</b>. GPU passthrough supported — add <code>/dev/dri</code> device mapping for hardware acceleration."
+    },
+    {
+      "type": 1,
+      "title": "🌐 Kasm Chrome Browser (Premium)",
+      "description": "Isolated Chrome browser in a container. Secure browsing — no data persists to host. Great for banking, sensitive work.",
+      "categories": ["CloverDesktop", "Premium", "Browser", "Security"],
+      "platform": "linux",
+      "image": "kasmweb/chrome:1.15.0",
+      "name": "cloverdesktop-kasm-chrome",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6909:6901/tcp"],
+      "volumes": [
+        { "container": "/home/kasm-user", "bind": "cloverdesktop-kasm-chrome-home" }
+      ],
+      "env": [
+        { "name": "VNC_PW", "default": "changeme", "label": "VNC/Web password" }
+      ],
+      "note": "Isolated Chrome browser. Access at <b>https://&lt;server-ip&gt;:6909</b>."
+    },
+    {
+      "type": 1,
+      "title": "🦊 Kasm Firefox Browser (Premium)",
+      "description": "Isolated Firefox browser in a container. Private browsing environment — nothing touches the host.",
+      "categories": ["CloverDesktop", "Premium", "Browser", "Privacy"],
+      "platform": "linux",
+      "image": "kasmweb/firefox:1.15.0",
+      "name": "cloverdesktop-kasm-firefox",
+      "restart_policy": "unless-stopped",
+      "network": "cloverstack",
+      "ports": ["6910:6901/tcp"],
+      "volumes": [
+        { "container": "/home/kasm-user", "bind": "cloverdesktop-kasm-firefox-home" }
+      ],
+      "env": [
+        { "name": "VNC_PW", "default": "changeme", "label": "VNC/Web password" }
+      ],
+      "note": "Isolated Firefox browser. Access at <b>https://&lt;server-ip&gt;:6910</b>."
+    }
+  ]
+}
