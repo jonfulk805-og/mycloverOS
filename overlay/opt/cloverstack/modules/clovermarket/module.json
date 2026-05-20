@@ -1,0 +1,15 @@
+{
+  "name": "clovermarket",
+  "display_name": "CloverMarket",
+  "description": "App marketplace for CloverStack — browse, install, and manage CloverApps",
+  "version": "1.0.0",
+  "category": "platform",
+  "ports": {"web": 8095},
+  "url_path": "/market",
+  "upstream": "CloverMarket (custom)",
+  "upstream_license": "Proprietary",
+  "min_ram_mb": 512,
+  "min_disk_gb": 5,
+  "default_enabled": true,
+  "services": ["clovermarket"]
+}
