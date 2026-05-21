@@ -205,7 +205,11 @@ mount --bind /run "${INSTALL_ROOT}/run" 2>/dev/null || true
 # Ensure efibootmgr is available for UEFI installs
 if [[ "${BOOT_MODE}" == "uefi" ]]; then
     chroot "${INSTALL_ROOT}" apt-get install -y efibootmgr 2>/dev/null || true
-    chroot "${INSTALL_ROOT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mycloverOS --recheck
+    # Install with --removable: puts EFI binary at EFI/BOOT/BOOTX64.EFI (universal fallback)
+    # Hyper-V Gen2 and many VMs don't persist custom NVRAM boot entries from chroot
+    chroot "${INSTALL_ROOT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mycloverOS --recheck --removable
+    # Also attempt normal (non-removable) install for bare-metal NVRAM entry (fails silently in VMs)
+    chroot "${INSTALL_ROOT}" grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mycloverOS --recheck 2>/dev/null || true
 else
     chroot "${INSTALL_ROOT}" grub-install "/dev/${TARGET_DISK}" --recheck
 fi
