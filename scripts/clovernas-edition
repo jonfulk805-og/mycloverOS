@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+# =============================================================================
+# clovernas -- CloverNAS Edition CLI
+# Standalone NAS appliance management: pools, shares, snapshots, apps, health
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CONFIG="/etc/myclover/clovernas.d/nas.conf"
+LOG_DIR="/var/log/clovernas"
+
+[[ -f "${CONFIG}" ]] && source "${CONFIG}"
+
+# --- Helpers -----------------------------------------------------------------
+log()  { echo -e "\033[0;32m[clovernas]\033[0m $*"; }
+err()  { echo -e "\033[0;31m[clovernas]\033[0m ERROR: $*" >&2; }
+warn() { echo -e "\033[1;33m[clovernas]\033[0m $*"; }
+
+usage() {
+    cat <<EOF
+🍀 CloverNAS Edition v${VERSION}
+Your Data. Your Metal. Your Rules.
+
+Usage: clovernas <command> [subcommand] [options]
+
+Pool Management:
+  pool create <name> <type> <devs...>   Create ZFS pool (mirror/raidz/raidz2/raidz3/stripe)
+  pool destroy <name>                   Destroy pool
+  pool status [name]                    Pool health status
+  pool scrub <name>                     Start integrity scrub
+  pool import                           Import available pools
+  pool export <name>                    Export pool safely
+
+Dataset Management:
+  dataset create <pool/name> [opts]     Create dataset
+  dataset destroy <pool/name>           Remove dataset
+  dataset list [pool]                   List datasets
+  dataset quota <pool/name> <size>      Set quota
+
+Snapshot Management:
+  snap create <dataset> [label]         Snapshot now
+  snap list [dataset]                   List snapshots
+  snap rollback <dataset@snap>          Revert to snapshot
+  snap destroy <dataset@snap>           Delete snapshot
+  snap lock <dataset@snap>              Lock (ransomware shield)
+  snap unlock <dataset@snap>            Release lock
+
+File Sharing:
+  share smb <dataset> [--name N]        Create SMB share
+  share nfs <dataset> [--network CIDR]  Create NFS export
+  share iscsi <dataset> --size S        Create iSCSI target
+  share s3 setup                        Configure MinIO S3
+  share list                            List all shares
+  share remove <name>                   Remove share
+
+Disk Management:
+  disk list                             All disks + status
+  disk smart <device>                   SMART report
+  disk test <device>                    Run SMART test
+  disk benchmark <device>               Throughput test (fio)
+  disk wipe <device>                    Secure erase
+
+Apps (Docker):
+  app list                              Available NAS apps
+  app install <id>                      Deploy app container
+  app remove <id>                       Remove app
+  app running                           Running containers
+  app logs <id>                         Container logs
+
+Replication:
+  repl setup <target>                   Configure replication target
+  repl run [dataset]                    Run replication now
+  repl status                           Replication status
+
+Cluster (CloverMesh):
+  mesh init <name>                      Initialize HA cluster
+  mesh join <primary-ip>                Join existing cluster
+  mesh status                           Cluster health
+  mesh failover                         Force failover to peer
+
+System:
+  status                                Full system dashboard
+  health                                Quick health check
+  update                                Update CloverNAS
+  config                                Show active config
+
+EOF
+}
+
+# =============================================================================
+# POOL COMMANDS
+# =============================================================================
+
+cmd_pool_create() {
+    local name="$1"; shift
+    local type="$1"; shift
+    local devices=("$@")
+
+    [[ ${#devices[@]} -lt 1 ]] && { err "Usage: clovernas pool create <name> <mirror|raidz|raidz2|raidz3|stripe> <dev1> [dev2...]"; exit 1; }
+
+    log "Creating ZFS pool '${name}' (${type}) with: ${devices[*]}"
+
+    local opts="-o ashift=12"
+    opts+=" -O compression=${ZFS_COMPRESSION:-lz4}"
+    opts+=" -O atime=${ZFS_ATIME:-off}"
+    opts+=" -O xattr=sa -O dnodesize=auto"
+    opts+=" -O recordsize=${ZFS_RECORD_SIZE:-128K}"
+    opts+=" -O aclinherit=passthrough"
+
+    case "${type}" in
+        mirror)  zpool create ${opts} "${name}" mirror "${devices[@]}" ;;
+        raidz)   zpool create ${opts} "${name}" raidz  "${devices[@]}" ;;
+        raidz2)  zpool create ${opts} "${name}" raidz2 "${devices[@]}" ;;
+        raidz3)  zpool create ${opts} "${name}" raidz3 "${devices[@]}" ;;
+        stripe)  zpool create ${opts} "${name}" "${devices[@]}" ;;
+        *)       err "Unknown type: ${type}"; exit 1 ;;
+    esac
+
+    # Default dataset structure
+    zfs create "${name}/data"
+    zfs create "${name}/data/files"
+    zfs create "${name}/data/media" && zfs set recordsize=1M "${name}/data/media"
+    zfs create "${name}/data/databases" && zfs set sync=always "${name}/data/databases"
+    zfs create "${name}/backups"
+    zfs create "${name}/docker" 2>/dev/null || true
+
+    log "Pool '${name}' created with default datasets"
+    zpool status "${name}"
+}
+
+# =============================================================================
+# SNAPSHOT COMMANDS
+# =============================================================================
+
+cmd_snap_create() {
+    local dataset="$1"
+    local label="${2:-manual-$(date +%Y%m%d-%H%M%S)}"
+    local snap="${dataset}@${label}"
+    zfs snapshot "${snap}"
+    log "Snapshot created: ${snap}"
+}
+
+cmd_snap_lock() {
+    local snap="$1"
+    zfs hold "ransomware-shield" "${snap}"
+    log "Locked (immutable): ${snap}"
+}
+
+cmd_snap_unlock() {
+    local snap="$1"
+    zfs release "ransomware-shield" "${snap}"
+    log "Unlocked: ${snap}"
+}
+
+# =============================================================================
+# SHARE COMMANDS
+# =============================================================================
+
+cmd_share_smb() {
+    local dataset="$1"; shift
+    local name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    name="${name:-$(basename ${dataset})}"
+    local mountpoint
+    mountpoint=$(zfs get -H -o value mountpoint "${dataset}")
+
+    cat >> /etc/samba/smb.conf <<SHARE
+
+[${name}]
+    path = ${mountpoint}
+    browseable = yes
+    read only = no
+    valid users = @nasusers
+    create mask = 0664
+    directory mask = 0775
+    vfs objects = fruit streams_xattr shadow_copy2 catia
+    shadow:snapdir = .zfs/snapshot
+    shadow:sort = desc
+SHARE
+
+    systemctl reload smbd 2>/dev/null || systemctl restart smbd
+    log "SMB share '${name}' → \\\\$(hostname)\\${name}"
+}
+
+cmd_share_nfs() {
+    local dataset="$1"; shift
+    local network="*"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --network) network="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    local mountpoint
+    mountpoint=$(zfs get -H -o value mountpoint "${dataset}")
+    echo "${mountpoint} ${network}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+    exportfs -ra
+    log "NFS export: ${mountpoint} → ${network}"
+}
+
+# =============================================================================
+# APP COMMANDS (Docker)
+# =============================================================================
+
+cmd_app_list() {
+    local catalog="/opt/clovernas/templates/apps.json"
+    [[ ! -f "${catalog}" ]] && { err "App catalog not found"; exit 1; }
+
+    echo ""
+    echo "🍀 CloverNAS Apps"
+    echo "═══════════════════════════════════════════"
+    jq -r '.apps[] | "  \(.id|@text)\t\(.name)\t\(.category)"' "${catalog}" | column -t -s $'\t'
+    echo ""
+    echo "Install: clovernas app install <id>"
+}
+
+cmd_app_install() {
+    local app_id="$1"
+    local catalog="/opt/clovernas/templates/apps.json"
+    
+    local image ports volumes
+    image=$(jq -r --arg id "${app_id}" '.apps[] | select(.id==$id) | .image' "${catalog}")
+    [[ -z "${image}" || "${image}" == "null" ]] && { err "Unknown app: ${app_id}"; exit 1; }
+    
+    local name
+    name=$(jq -r --arg id "${app_id}" '.apps[] | select(.id==$id) | .name' "${catalog}")
+    
+    log "Installing ${name} (${image})..."
+    
+    # Build docker run command from catalog
+    local cmd="docker run -d --name clovernas-${app_id} --restart always"
+    
+    # Add port mappings
+    while IFS=: read -r host container; do
+        cmd+=" -p ${host}:${container}"
+    done < <(jq -r --arg id "${app_id}" '.apps[] | select(.id==$id) | .ports | to_entries[] | "\(.key):\(.value)"' "${catalog}" 2>/dev/null)
+    
+    # Add volume mappings
+    while IFS=: read -r host container; do
+        mkdir -p "${host}" 2>/dev/null || true
+        cmd+=" -v ${host}:${container}"
+    done < <(jq -r --arg id "${app_id}" '.apps[] | select(.id==$id) | .volumes | to_entries[] | "\(.key):\(.value)"' "${catalog}" 2>/dev/null)
+    
+    cmd+=" ${image}"
+    eval "${cmd}"
+    
+    log "${name} installed and running"
+}
+
+cmd_app_remove() {
+    local app_id="$1"
+    docker stop "clovernas-${app_id}" 2>/dev/null || true
+    docker rm "clovernas-${app_id}" 2>/dev/null || true
+    log "App '${app_id}' removed"
+}
+
+cmd_app_running() {
+    docker ps --filter "name=clovernas-" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+}
+
+# =============================================================================
+# MESH / HA COMMANDS
+# =============================================================================
+
+cmd_mesh_init() {
+    local cluster_name="${1:-clovernas-cluster}"
+    log "Initializing CloverMesh HA cluster: ${cluster_name}..."
+    
+    # Generate WireGuard keys
+    mkdir -p /etc/wireguard
+    wg genkey | tee /etc/wireguard/mesh_privatekey | wg pubkey > /etc/wireguard/mesh_publickey
+    chmod 600 /etc/wireguard/mesh_privatekey
+    
+    # Initialize Corosync
+    sed -i "s/^MESH_CLUSTER_NAME=.*/MESH_CLUSTER_NAME=\"${cluster_name}\"/" /etc/myclover/clovermesh.d/defaults.conf 2>/dev/null || true
+    sed -i "s/^MESH_NODE_NAME=.*/MESH_NODE_NAME=\"$(hostname)\"/" /etc/myclover/clovermesh.d/defaults.conf 2>/dev/null || true
+    
+    log "Cluster '${cluster_name}' initialized"
+    log "Join other nodes with: clovernas mesh join $(hostname -I | awk '{print $1}')"
+}
+
+# =============================================================================
+# STATUS DASHBOARD
+# =============================================================================
+
+cmd_status() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║            🍀 CloverNAS Status Dashboard             ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+
+    # Uptime
+    echo "=== System ==="
+    printf "  Hostname:   %s\n" "$(hostname)"
+    printf "  Uptime:     %s\n" "$(uptime -p)"
+    printf "  Load:       %s\n" "$(cat /proc/loadavg | awk '{print $1, $2, $3}')"
+    printf "  RAM:        %s / %s\n" "$(free -h | awk '/Mem:/{print $3}')" "$(free -h | awk '/Mem:/{print $2}')"
+    echo ""
+
+    # Pools
+    echo "=== ZFS Pools ==="
+    if zpool list &>/dev/null; then
+        zpool list -o name,size,alloc,free,cap,health 2>/dev/null
+    else
+        echo "  No pools configured"
+    fi
+    echo ""
+
+    # Disks
+    echo "=== Disks ==="
+    lsblk -d -o NAME,SIZE,TYPE,MODEL,ROTA -e 7,11 2>/dev/null | head -10
+    echo ""
+
+    # Shares
+    echo "=== Active Shares ==="
+    local smb_count nfs_count
+    smb_count=$(testparm -s 2>/dev/null | grep -c '^\[' || echo 0)
+    nfs_count=$(exportfs -v 2>/dev/null | grep -c '/' || echo 0)
+    echo "  SMB: ${smb_count} shares   NFS: ${nfs_count} exports"
+    echo ""
+
+    # Snapshots
+    echo "=== Snapshots (recent 5) ==="
+    zfs list -t snapshot -o name,used,creation -S creation 2>/dev/null | head -6 || echo "  None"
+    echo ""
+
+    # Docker apps
+    echo "=== Running Apps ==="
+    docker ps --filter "name=clovernas-" --format "  {{.Names}}: {{.Status}}" 2>/dev/null || echo "  None"
+    echo ""
+
+    # Services
+    echo "=== Services ==="
+    for svc in smbd nfs-kernel-server tgt cockpit.socket zfs-zed smartd clovernas; do
+        if systemctl is-active "${svc}" &>/dev/null; then
+            printf "  %-25s ✅ running\n" "${svc}"
+        elif systemctl is-enabled "${svc}" &>/dev/null; then
+            printf "  %-25s ⏸  stopped\n" "${svc}"
+        else
+            printf "  %-25s ⬚  disabled\n" "${svc}"
+        fi
+    done
+    echo ""
+
+    # Web UI
+    local ip
+    ip=$(hostname -I | awk '{print $1}')
+    echo "=== Access ==="
+    echo "  Web UI:  https://${ip}:${CLOVERNAS_WEB_PORT:-8080}"
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+CMD="${1:-}"
+SUB="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${CMD}" in
+    pool)
+        case "${SUB}" in
+            create)   cmd_pool_create "$@" ;;
+            destroy)  zpool destroy "$@" ;;
+            status)   zpool status "$@" 2>/dev/null; echo; zpool list 2>/dev/null ;;
+            scrub)    zpool scrub "$@" ;;
+            import)   zpool import "$@" ;;
+            export)   zpool export "$@" ;;
+            *)        usage ;;
+        esac ;;
+    dataset)
+        case "${SUB}" in
+            create)   zfs create "$@" ;;
+            destroy)  zfs destroy "$@" ;;
+            list)     zfs list "$@" ;;
+            quota)    zfs set quota="$2" "$1" ;;
+            *)        usage ;;
+        esac ;;
+    snap)
+        case "${SUB}" in
+            create)   cmd_snap_create "$@" ;;
+            list)     zfs list -t snapshot -o name,used,refer,creation ${1:+-r "$1"} ;;
+            rollback) zfs rollback -r "$@" ;;
+            destroy)  zfs destroy "$@" ;;
+            lock)     cmd_snap_lock "$@" ;;
+            unlock)   cmd_snap_unlock "$@" ;;
+            *)        usage ;;
+        esac ;;
+    share)
+        case "${SUB}" in
+            smb)    cmd_share_smb "$@" ;;
+            nfs)    cmd_share_nfs "$@" ;;
+            s3)     /opt/clovernas/scripts/setup-minio.sh ;;
+            list)   testparm -s 2>/dev/null | grep '^\['; echo; exportfs -v 2>/dev/null ;;
+            remove) err "Manual removal: edit /etc/samba/smb.conf or /etc/exports" ;;
+            *)      usage ;;
+        esac ;;
+    disk)
+        case "${SUB}" in
+            list)      lsblk -d -o NAME,SIZE,TYPE,MODEL,SERIAL,ROTA,TRAN -e 7,11 ;;
+            smart)     smartctl -a "$@" ;;
+            test)      smartctl -t long "$@" ;;
+            benchmark) fio --name=bench --filename="$1" --rw=readwrite --bs=1M --size=1G --runtime=30 --time_based --ioengine=libaio --direct=1 ;;
+            wipe)      err "wipefs -a $1 && dd if=/dev/zero of=$1 bs=1M count=100" ;;
+            *)         usage ;;
+        esac ;;
+    app)
+        case "${SUB}" in
+            list)    cmd_app_list ;;
+            install) cmd_app_install "$@" ;;
+            remove)  cmd_app_remove "$@" ;;
+            running) cmd_app_running ;;
+            logs)    docker logs "clovernas-$1" ;;
+            *)       usage ;;
+        esac ;;
+    repl)
+        case "${SUB}" in
+            run)    /opt/clovernas/scripts/zfs-replicate.sh "$@" ;;
+            status) cat /var/log/clovernas/replication.log 2>/dev/null | tail -20 ;;
+            *)      usage ;;
+        esac ;;
+    mesh)
+        case "${SUB}" in
+            init)     cmd_mesh_init "$@" ;;
+            status)   crm status 2>/dev/null || echo "Cluster not initialized" ;;
+            *)        usage ;;
+        esac ;;
+    status)  cmd_status ;;
+    health)  /opt/clovernas/scripts/smart-monitor.sh; zpool status -x ;;
+    config)  cat "${CONFIG}" ;;
+    help|--help|-h|"") usage ;;
+    *)       err "Unknown command: ${CMD}"; usage; exit 1 ;;
+esac
