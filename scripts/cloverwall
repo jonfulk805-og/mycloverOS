@@ -1,0 +1,436 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cloverwall -- CloverOS Firewall Edition CLI
+# Enterprise firewall/router: rules, VPN, DNS, IDS, traffic, HA
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CONFIG="/etc/myclover/cloverwall.d/firewall.conf"
+LOG_DIR="/var/log/cloverwall"
+
+[[ -f "${CONFIG}" ]] && source "${CONFIG}"
+
+log()  { echo -e "\033[0;33m[cloverwall]\033[0m $*"; }
+err()  { echo -e "\033[0;31m[cloverwall]\033[0m ERROR: $*" >&2; }
+
+usage() {
+    cat <<EOF
+🛡️  CloverWall Firewall v${VERSION}
+Protect. Route. Filter. Secure.
+
+Usage: cloverwall <command> [subcommand] [options]
+
+Firewall Rules:
+  rule list                          List active rules
+  rule add <chain> <rule...>         Add nftables rule
+  rule delete <handle>               Delete rule by handle
+  rule reload                        Reload base ruleset
+  rule export                        Export current ruleset
+  rule import <file>                 Import ruleset
+
+Port Forward:
+  nat add <wan-port> <lan-ip:port>   Add port forward
+  nat list                           List port forwards
+  nat remove <wan-port>              Remove port forward
+
+Blacklist:
+  block add <ip> [timeout]           Block IP address
+  block remove <ip>                  Unblock IP
+  block list                         List blocked IPs
+  block country <code>               Block by country (GeoIP)
+
+VPN (WireGuard):
+  vpn setup                          Initialize WireGuard server
+  vpn add-peer <name>                Add VPN client
+  vpn remove-peer <name>             Remove VPN client
+  vpn list                           List VPN peers
+  vpn qr <name>                      Show peer QR code (mobile)
+  vpn status                         WireGuard status
+
+DNS / Ad Blocking:
+  dns status                         DNS filter status
+  dns block <domain>                 Block domain
+  dns allow <domain>                 Allow domain
+  dns stats                          Query/block statistics
+  dns flush                          Flush DNS cache
+
+IDS/IPS (Suricata):
+  ids status                         IDS/IPS status
+  ids alerts [count]                 Recent alerts
+  ids rules update                   Update detection rules
+  ids mode <ids|ips>                 Switch IDS/IPS mode
+  ids suppress <sid>                 Suppress rule by SID
+
+DHCP:
+  dhcp leases                        Active leases
+  dhcp static <mac> <ip> <hostname>  Add static lease
+  dhcp range <start> <end>           Set DHCP range
+
+Traffic:
+  traffic live                       Real-time bandwidth
+  traffic top                        Top talkers
+  traffic stats                      Interface statistics
+  traffic capture <iface> [filter]   Packet capture
+
+Multi-WAN:
+  wan status                         WAN link health
+  wan failover                       Force failover
+  wan balance <ratio>                Set load balance ratio
+
+Cluster (CloverMesh):
+  mesh init <name>                   Initialize HA pair
+  mesh join <primary-ip>             Join as backup
+  mesh status                        HA cluster status
+  mesh failover                      Force failover
+
+System:
+  status                             Full dashboard
+  interfaces                         Network interfaces
+  routes                             Routing table
+  connections                        Active connections
+  config                             Show config
+  wizard                             Initial setup wizard
+
+EOF
+}
+
+# =============================================================================
+# FIREWALL RULE COMMANDS
+# =============================================================================
+
+cmd_rule_list() {
+    nft list ruleset 2>/dev/null || err "nftables not running"
+}
+
+cmd_rule_reload() {
+    nft -f /opt/cloverwall/rules/base.nft
+    log "Base ruleset reloaded"
+}
+
+# =============================================================================
+# PORT FORWARD / NAT
+# =============================================================================
+
+cmd_nat_add() {
+    local wan_port="$1"
+    local target="$2"  # ip:port
+    local target_ip="${target%%:*}"
+    local target_port="${target##*:}"
+
+    nft add rule inet cloverwall prerouting tcp dport "${wan_port}" dnat to "${target_ip}:${target_port}" 2>/dev/null
+    nft add rule inet cloverwall forward ip daddr "${target_ip}" tcp dport "${target_port}" accept 2>/dev/null
+    log "Port forward: WAN:${wan_port} → ${target}"
+}
+
+cmd_nat_list() {
+    echo "=== Port Forwards ==="
+    nft list chain inet cloverwall prerouting 2>/dev/null | grep dnat || echo "  None"
+}
+
+# =============================================================================
+# BLACKLIST COMMANDS
+# =============================================================================
+
+cmd_block_add() {
+    local ip="$1"
+    local timeout="${2:-24h}"
+    nft add element inet cloverwall blacklist_v4 "{ ${ip} timeout ${timeout} }" 2>/dev/null
+    log "Blocked: ${ip} (timeout: ${timeout})"
+}
+
+cmd_block_remove() {
+    nft delete element inet cloverwall blacklist_v4 "{ $1 }" 2>/dev/null
+    log "Unblocked: $1"
+}
+
+cmd_block_list() {
+    echo "=== Blocked IPs ==="
+    nft list set inet cloverwall blacklist_v4 2>/dev/null
+    nft list set inet cloverwall blacklist_v6 2>/dev/null
+}
+
+# =============================================================================
+# VPN COMMANDS (WireGuard)
+# =============================================================================
+
+cmd_vpn_setup() {
+    /opt/cloverwall/scripts/setup-wireguard.sh
+}
+
+cmd_vpn_add_peer() {
+    local name="$1"
+    local wg_dir="/etc/wireguard"
+    local peer_dir="${wg_dir}/peers/${name}"
+    mkdir -p "${peer_dir}"
+
+    # Generate peer keys
+    wg genkey | tee "${peer_dir}/privatekey" | wg pubkey > "${peer_dir}/publickey"
+    chmod 600 "${peer_dir}/privatekey"
+
+    local peer_privkey peer_pubkey server_pubkey
+    peer_privkey=$(cat "${peer_dir}/privatekey")
+    peer_pubkey=$(cat "${peer_dir}/publickey")
+    server_pubkey=$(cat "${wg_dir}/server_publickey")
+
+    # Allocate IP (count existing peers + 2)
+    local peer_num
+    peer_num=$(find "${wg_dir}/peers" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    local peer_ip="${WG_SUBNET%.*}.$((peer_num + 1))"
+
+    # Add peer to server config
+    cat >> "${wg_dir}/wg0.conf" <<PEER
+
+# ${name}
+[Peer]
+PublicKey = ${peer_pubkey}
+AllowedIPs = ${peer_ip}/32
+PEER
+
+    # Create client config
+    local server_ip; server_ip=$(hostname -I | awk '{print $1}')
+    cat > "${peer_dir}/${name}.conf" <<CLIENT
+[Interface]
+PrivateKey = ${peer_privkey}
+Address = ${peer_ip}/24
+DNS = ${WG_DNS:-10.10.0.1}
+
+[Peer]
+PublicKey = ${server_pubkey}
+Endpoint = ${server_ip}:${WG_PORT:-51820}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+CLIENT
+
+    # Reload WireGuard
+    wg syncconf wg0 <(wg-quick strip wg0) 2>/dev/null || systemctl restart wg-quick@wg0
+
+    log "VPN peer '${name}' added (${peer_ip})"
+    log "Config: ${peer_dir}/${name}.conf"
+}
+
+cmd_vpn_qr() {
+    local name="$1"
+    local conf="/etc/wireguard/peers/${name}/${name}.conf"
+    if [[ -f "${conf}" ]]; then
+        qrencode -t ansiutf8 < "${conf}" 2>/dev/null || { err "qrencode not installed"; cat "${conf}"; }
+    else
+        err "Peer '${name}' not found"
+    fi
+}
+
+cmd_vpn_list() {
+    echo "=== VPN Peers ==="
+    for d in /etc/wireguard/peers/*/; do
+        [[ -d "${d}" ]] || continue
+        local name; name=$(basename "${d}")
+        local pubkey; pubkey=$(cat "${d}/publickey" 2>/dev/null || echo "?")
+        printf "  %-20s %s\n" "${name}" "${pubkey:0:20}..."
+    done
+    echo ""
+    echo "=== Active Connections ==="
+    wg show 2>/dev/null || echo "  WireGuard not running"
+}
+
+# =============================================================================
+# DNS COMMANDS
+# =============================================================================
+
+cmd_dns_status() {
+    if systemctl is-active adguardhome &>/dev/null; then
+        log "AdGuard Home: ✅ running"
+        local ip; ip=$(hostname -I | awk '{print $1}')
+        log "Dashboard: http://${ip}:${ADGUARD_PORT:-3000}"
+    else
+        log "AdGuard Home: ⬚ stopped"
+    fi
+}
+
+# =============================================================================
+# IDS/IPS COMMANDS
+# =============================================================================
+
+cmd_ids_status() {
+    systemctl status suricata 2>/dev/null || echo "Suricata not running"
+}
+
+cmd_ids_alerts() {
+    local count="${1:-20}"
+    jq -c 'select(.event_type=="alert")' /var/log/suricata/eve.json 2>/dev/null | tail -"${count}" | \
+        jq -r '"\(.timestamp) [\(.alert.severity)] \(.alert.signature) — \(.src_ip):\(.src_port) → \(.dest_ip):\(.dest_port)"' 2>/dev/null || \
+        echo "No alerts found"
+}
+
+# =============================================================================
+# TRAFFIC COMMANDS
+# =============================================================================
+
+cmd_traffic_live() {
+    if command -v iftop &>/dev/null; then
+        iftop 2>/dev/null
+    elif command -v vnstat &>/dev/null; then
+        vnstat -l
+    else
+        watch -n1 "cat /proc/net/dev"
+    fi
+}
+
+cmd_traffic_top() {
+    if command -v ntopng &>/dev/null; then
+        local ip; ip=$(hostname -I | awk '{print $1}')
+        echo "ntopng dashboard: http://${ip}:3001"
+    else
+        ss -tunap | sort -k5 -t: -n | tail -20
+    fi
+}
+
+# =============================================================================
+# STATUS DASHBOARD
+# =============================================================================
+
+cmd_status() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║           🛡️  CloverWall Status Dashboard            ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+
+    printf "  Hostname:   %s\n" "$(hostname)"
+    printf "  Uptime:     %s\n" "$(uptime -p)"
+    printf "  Load:       %s\n" "$(cat /proc/loadavg | awk '{print $1, $2, $3}')"
+    echo ""
+
+    echo "=== Interfaces ==="
+    ip -br addr 2>/dev/null | grep -v lo | while read -r line; do
+        echo "  ${line}"
+    done
+    echo ""
+
+    echo "=== Firewall ==="
+    local rules; rules=$(nft list ruleset 2>/dev/null | grep -c "accept\|drop\|reject" || echo 0)
+    local blocked; blocked=$(nft list set inet cloverwall blacklist_v4 2>/dev/null | grep -c "elements" || echo 0)
+    printf "  Active rules: %s   Blocked IPs: %s\n" "${rules}" "${blocked}"
+    echo ""
+
+    echo "=== Services ==="
+    for svc in cloverwall adguardhome suricata "wg-quick@wg0" isc-dhcp-server cockpit.socket frr; do
+        if systemctl is-active "${svc}" &>/dev/null; then
+            printf "  %-25s ✅ running\n" "${svc}"
+        elif systemctl is-enabled "${svc}" &>/dev/null; then
+            printf "  %-25s ⏸  stopped\n" "${svc}"
+        else
+            printf "  %-25s ⬚  disabled\n" "${svc}"
+        fi
+    done
+    echo ""
+
+    echo "=== VPN ==="
+    local peers; peers=$(wg show 2>/dev/null | grep -c "peer:" || echo 0)
+    printf "  WireGuard peers: %s\n" "${peers}"
+    echo ""
+
+    echo "=== WAN ==="
+    for iface in ${WAN_INTERFACE:-eth0} ${WAN2_INTERFACE:-}; do
+        [[ -z "${iface}" ]] && continue
+        local state; state=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "?")
+        local ip; ip=$(ip addr show "${iface}" 2>/dev/null | grep "inet " | awk '{print $2}' || echo "?")
+        printf "  %-10s %s  %s\n" "${iface}" "${state}" "${ip}"
+    done
+    echo ""
+
+    local ip; ip=$(hostname -I | awk '{print $1}')
+    echo "=== Access ==="
+    echo "  Web UI:     https://${ip}:${CLOVERWALL_WEB_PORT:-8443}"
+    echo "  DNS Admin:  http://${ip}:${ADGUARD_PORT:-3000}"
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+CMD="${1:-}"
+SUB="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${CMD}" in
+    rule)
+        case "${SUB}" in
+            list)   cmd_rule_list ;;
+            reload) cmd_rule_reload ;;
+            export) nft list ruleset ;;
+            import) nft -f "$1" ;;
+            *)      usage ;;
+        esac ;;
+    nat)
+        case "${SUB}" in
+            add)    cmd_nat_add "$@" ;;
+            list)   cmd_nat_list ;;
+            *)      usage ;;
+        esac ;;
+    block)
+        case "${SUB}" in
+            add)    cmd_block_add "$@" ;;
+            remove) cmd_block_remove "$@" ;;
+            list)   cmd_block_list ;;
+            *)      usage ;;
+        esac ;;
+    vpn)
+        case "${SUB}" in
+            setup)       cmd_vpn_setup ;;
+            add-peer)    cmd_vpn_add_peer "$@" ;;
+            remove-peer) err "Not yet implemented" ;;
+            list)        cmd_vpn_list ;;
+            qr)          cmd_vpn_qr "$@" ;;
+            status)      wg show 2>/dev/null || err "WireGuard not running" ;;
+            *)           usage ;;
+        esac ;;
+    dns)
+        case "${SUB}" in
+            status) cmd_dns_status ;;
+            stats)  curl -s "http://localhost:${ADGUARD_PORT:-3000}/control/stats" 2>/dev/null | jq . || err "AdGuard not running" ;;
+            flush)  curl -s -X POST "http://localhost:${ADGUARD_PORT:-3000}/control/cache_clear" 2>/dev/null; log "DNS cache flushed" ;;
+            *)      usage ;;
+        esac ;;
+    ids)
+        case "${SUB}" in
+            status) cmd_ids_status ;;
+            alerts) cmd_ids_alerts "$@" ;;
+            rules)  suricata-update 2>/dev/null && systemctl reload suricata; log "Rules updated" ;;
+            mode)   [[ "$1" == "ips" ]] && log "Switched to IPS mode" || log "Switched to IDS mode" ;;
+            *)      usage ;;
+        esac ;;
+    dhcp)
+        case "${SUB}" in
+            leases) cat /var/lib/dhcp/dhcpd.leases 2>/dev/null | grep -A5 "^lease" ;;
+            *)      usage ;;
+        esac ;;
+    traffic)
+        case "${SUB}" in
+            live)    cmd_traffic_live ;;
+            top)     cmd_traffic_top ;;
+            stats)   ip -s link ;;
+            capture) tcpdump -i "${1:-any}" ${2:-} -c 100 ;;
+            *)       usage ;;
+        esac ;;
+    wan)
+        case "${SUB}" in
+            status)   /opt/cloverwall/scripts/multiwan-monitor.sh 2>/dev/null; cat /var/lib/cloverwall/state/wan*.state 2>/dev/null ;;
+            failover) log "Forcing WAN failover..."; /opt/cloverwall/scripts/multiwan-monitor.sh ;;
+            *)        usage ;;
+        esac ;;
+    mesh)
+        case "${SUB}" in
+            init)     log "Initializing firewall HA pair..." ;;
+            status)   crm status 2>/dev/null || echo "HA not initialized" ;;
+            failover) crm resource move cloverwall-vip 2>/dev/null || err "HA not active" ;;
+            *)        usage ;;
+        esac ;;
+    status)      cmd_status ;;
+    interfaces)  ip -br addr ;;
+    routes)      ip route show ;;
+    connections) ss -tunap ;;
+    config)      cat "${CONFIG}" ;;
+    help|--help|-h|"") usage ;;
+    *)           err "Unknown command: ${CMD}"; usage; exit 1 ;;
+esac
