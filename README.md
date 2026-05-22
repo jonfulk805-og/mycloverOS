@@ -70,6 +70,10 @@ sudo myclover-install
 
 The installer guides you through disk selection, partitioning, and initial configuration.
 
+### Full Quick Start Guide
+
+For the complete walkthrough — Portainer setup, CloverStack modules, Traefik, firewall config, and troubleshooting — see the **[Quick Start Guide](docs/QUICKSTART.md)**.
+
 ## Repository Structure
 
 ```
