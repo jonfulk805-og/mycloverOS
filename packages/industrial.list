@@ -1,0 +1,137 @@
+# =============================================================================
+# mycloverOS Industrial Edition — Package List
+# SCADA/ICS platform: IoT gateway, Modbus, MQTT, OPC-UA, Node-RED, hardened
+# Build: sudo ./build.sh industrial
+# =============================================================================
+
+# --- MQTT Broker (IoT messaging backbone) ---
+mosquitto
+mosquitto-clients
+
+# --- Modbus / Industrial Protocols ---
+# libmodbus for Modbus TCP/RTU
+libmodbus-dev
+libmodbus5
+# Serial port tools (RS-232/RS-485)
+minicom
+picocom
+setserial
+
+# --- Node-RED (flow-based automation) ---
+# Installed via npm in hook (latest LTS)
+nodejs
+npm
+
+# --- OPC-UA ---
+# open62541 (open-source OPC-UA) installed via hook
+# python-opcua for scripting
+python3-full
+python3-pip
+python3-venv
+
+# --- Time-Series Database ---
+# InfluxDB installed via hook (official binary)
+# Alternatively: TimescaleDB via Docker
+
+# --- Visualization / Dashboards ---
+# Grafana installed via hook (official .deb)
+# Cockpit for system management
+cockpit
+cockpit-networkmanager
+
+# --- LoRa / Radio Gateway ---
+# ChirpStack LoRa network server (Docker)
+# sx1302_hal for Semtech concentrator HAL (built from source in hook)
+# Serial/USB for LoRa modules
+usb-modeswitch
+usbutils
+
+# --- GPIO / Hardware Interface ---
+i2c-tools
+# SPI tools
+# CAN bus
+can-utils
+iproute2
+
+# --- Container Runtime (for industrial apps) ---
+# Docker CE via existing hook
+# Podman as alternative for air-gapped
+podman
+buildah
+skopeo
+
+# --- Security / Hardening ---
+apparmor
+apparmor-utils
+auditd
+audispd-plugins
+aide
+tripwire
+fail2ban
+ufw
+
+# --- Network Segmentation ---
+nftables
+bridge-utils
+vlan
+openvswitch-switch
+wireguard-tools
+
+# --- VPN (site-to-site for OT networks) ---
+wireguard-tools
+strongswan
+openvpn
+
+# --- Backup ---
+restic
+rsync
+
+# --- Logging / SIEM ---
+rsyslog
+rsyslog-relp
+logrotate
+# Wazuh agent (installed via hook for OT SIEM)
+
+# --- NTP (precise time for industrial protocols) ---
+chrony
+linuxptp
+
+# --- DNS ---
+dnsmasq
+
+# --- SNMP ---
+snmpd
+snmp
+libsnmp-dev
+
+# --- Database ---
+sqlite3
+postgresql-client
+
+# --- Network Monitoring ---
+nmap
+tcpdump
+mtr-tiny
+ethtool
+iftop
+iptraf-ng
+
+# --- Watchdog / Reliability ---
+watchdog
+
+# --- UPS ---
+nut
+nut-client
+
+# --- Misc ---
+tmux
+htop
+screen
+jq
+bc
+curl
+wget
+acl
+cron
+at
+ncdu
