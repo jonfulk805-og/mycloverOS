@@ -1,0 +1,801 @@
+#!/usr/bin/env bash
+# =============================================================================
+# clovervisor -- CloverOS Hypervisor Blackbox Edition CLI
+# Manage VMs, storage, networking, GPU passthrough, HA clusters, and backups
+# from the command line. Pairs with the CloverVisor web UI on :8006.
+#
+# Usage: clovervisor <command> [subcommand] [options]
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CONFIG_DIR="/etc/myclover/clovervisor.d"
+DATA_DIR="/var/lib/clovervisor"
+LOG_DIR="/var/log/clovervisor"
+SCRIPT_DIR="/opt/clovervisor/scripts"
+TEMPLATE_DIR="/opt/clovervisor/templates"
+
+# --- Colors ------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[clovervisor]${NC} $*"; }
+warn() { echo -e "${YELLOW}[clovervisor]${NC} $*"; }
+err()  { echo -e "${RED}[clovervisor]${NC} $*" >&2; }
+info() { echo -e "${CYAN}[clovervisor]${NC} $*"; }
+
+# Load config
+if [[ -f "${CONFIG_DIR}/hypervisor.conf" ]]; then
+    source "${CONFIG_DIR}/hypervisor.conf"
+fi
+
+# =============================================================================
+# VM MANAGEMENT
+# =============================================================================
+vm_list() {
+    echo -e "${BOLD}Virtual Machines${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    printf "%-20s %-12s %-8s %-6s %-10s %-16s\n" "NAME" "STATE" "RAM" "vCPU" "DISK" "IP"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    for vm in $(virsh list --all --name 2>/dev/null); do
+        STATE=$(virsh domstate "${vm}" 2>/dev/null || echo "unknown")
+        RAM=$(virsh dominfo "${vm}" 2>/dev/null | awk '/Max memory/ {printf "%.0fMB", $3/1024}')
+        VCPU=$(virsh dominfo "${vm}" 2>/dev/null | awk '/CPU\(s\)/ {print $2}')
+        # Get disk size
+        DISK=$(virsh domblkinfo "${vm}" --all 2>/dev/null | awk '/Capacity/ {printf "%.0fGB", $2/1073741824}' | head -1)
+        [[ -z "${DISK}" ]] && DISK="-"
+        # Get IP
+        IP=$(virsh domifaddr "${vm}" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}' | head -1)
+        [[ -z "${IP}" ]] && IP="-"
+
+        # Color state
+        case "${STATE}" in
+            running)   STATE_C="${GREEN}running${NC}" ;;
+            shut*)     STATE_C="${RED}stopped${NC}" ;;
+            paused)    STATE_C="${YELLOW}paused${NC}" ;;
+            *)         STATE_C="${STATE}" ;;
+        esac
+
+        printf "%-20s %-22b %-8s %-6s %-10s %-16s\n" "${vm}" "${STATE_C}" "${RAM}" "${VCPU}" "${DISK}" "${IP}"
+    done
+
+    TOTAL=$(virsh list --all --name 2>/dev/null | wc -l)
+    RUNNING=$(virsh list --name 2>/dev/null | wc -l)
+    echo ""
+    echo -e "Total: ${TOTAL} VMs | Running: ${GREEN}${RUNNING}${NC}"
+}
+
+vm_create() {
+    local NAME="${1:-}"
+    local TEMPLATE="${2:-}"
+
+    if [[ -z "${NAME}" ]]; then
+        err "Usage: clovervisor vm create <name> [template]"
+        err "Templates: $(jq -r '.templates[].id' "${TEMPLATE_DIR}/catalog.json" 2>/dev/null | tr '\n' ', ')"
+        exit 1
+    fi
+
+    # Check if VM already exists
+    if virsh dominfo "${NAME}" &>/dev/null; then
+        err "VM '${NAME}' already exists"
+        exit 1
+    fi
+
+    # Load template defaults
+    local RAM="${VM_DEFAULT_RAM:-2048}"
+    local VCPUS="${VM_DEFAULT_VCPUS:-2}"
+    local DISK="${VM_DEFAULT_DISK:-20}"
+    local OS_VARIANT="debian12"
+    local UEFI=false
+    local TPM=false
+    local NICS=1
+
+    if [[ -n "${TEMPLATE}" ]] && [[ -f "${TEMPLATE_DIR}/catalog.json" ]]; then
+        local TMPL_DATA
+        TMPL_DATA=$(jq -r ".templates[] | select(.id == \"${TEMPLATE}\")" "${TEMPLATE_DIR}/catalog.json" 2>/dev/null)
+        if [[ -n "${TMPL_DATA}" ]]; then
+            RAM=$(echo "${TMPL_DATA}" | jq -r '.ram_mb // empty')
+            VCPUS=$(echo "${TMPL_DATA}" | jq -r '.vcpus // empty')
+            DISK=$(echo "${TMPL_DATA}" | jq -r '.disk_gb // empty')
+            OS_VARIANT=$(echo "${TMPL_DATA}" | jq -r '.id // "debian12"')
+            UEFI=$(echo "${TMPL_DATA}" | jq -r '.uefi // false')
+            TPM=$(echo "${TMPL_DATA}" | jq -r '.tpm // false')
+            NICS=$(echo "${TMPL_DATA}" | jq -r '.nics // 1')
+            log "Using template: ${TEMPLATE} (${RAM}MB RAM, ${VCPUS} vCPU, ${DISK}GB disk)"
+        else
+            warn "Template '${TEMPLATE}' not found, using defaults"
+        fi
+    fi
+
+    # Allow overrides via env vars
+    RAM="${CV_RAM:-${RAM}}"
+    VCPUS="${CV_VCPUS:-${VCPUS}}"
+    DISK="${CV_DISK:-${DISK}}"
+
+    log "Creating VM: ${NAME}"
+    log "  RAM: ${RAM}MB | vCPUs: ${VCPUS} | Disk: ${DISK}GB"
+
+    # Create disk image
+    local DISK_PATH="${DATA_DIR}/vms/${NAME}.qcow2"
+    qemu-img create -f qcow2 "${DISK_PATH}" "${DISK}G"
+
+    # Build virt-install command
+    local INSTALL_ARGS=(
+        --name "${NAME}"
+        --ram "${RAM}"
+        --vcpus "${VCPUS}"
+        --disk "path=${DISK_PATH},format=qcow2,bus=virtio"
+        --network "bridge=${OVS_BRIDGE:-clover-br0},model=virtio"
+        --graphics vnc,listen=0.0.0.0
+        --noautoconsole
+        --os-variant "${OS_VARIANT}"
+        --boot hd
+        --cpu host-passthrough
+    )
+
+    # Add extra NICs if template requires
+    for ((i=2; i<=NICS; i++)); do
+        INSTALL_ARGS+=(--network "bridge=${OVS_BRIDGE:-clover-br0},model=virtio")
+    done
+
+    # UEFI boot
+    if [[ "${UEFI}" == "true" ]]; then
+        INSTALL_ARGS+=(--boot uefi)
+    fi
+
+    # Import mode (no install media) -- VM will boot from empty disk
+    # User attaches ISO via: clovervisor vm attach-iso <name> <iso>
+    INSTALL_ARGS+=(--import)
+
+    virt-install "${INSTALL_ARGS[@]}" 2>&1
+
+    log "VM '${NAME}' created successfully"
+    log "Attach ISO: clovervisor vm attach-iso ${NAME} <path.iso>"
+    log "Start:      clovervisor vm start ${NAME}"
+    log "Console:    clovervisor vm console ${NAME}"
+}
+
+vm_start()   { virsh start "${1:?VM name required}" && log "VM '${1}' started"; }
+vm_stop()    { virsh shutdown "${1:?VM name required}" && log "VM '${1}' shutting down"; }
+vm_kill()    { virsh destroy "${1:?VM name required}" && log "VM '${1}' force stopped"; }
+vm_restart() { virsh reboot "${1:?VM name required}" && log "VM '${1}' rebooting"; }
+vm_pause()   { virsh suspend "${1:?VM name required}" && log "VM '${1}' paused"; }
+vm_resume()  { virsh resume "${1:?VM name required}" && log "VM '${1}' resumed"; }
+vm_delete()  {
+    local NAME="${1:?VM name required}"
+    local FORCE="${2:-}"
+
+    if [[ "${FORCE}" != "--force" ]]; then
+        read -rp "Delete VM '${NAME}' and its disks? [y/N] " CONFIRM
+        [[ "${CONFIRM}" != "y" && "${CONFIRM}" != "Y" ]] && exit 0
+    fi
+
+    virsh destroy "${NAME}" 2>/dev/null || true
+    virsh undefine "${NAME}" --remove-all-storage --nvram 2>/dev/null || \
+    virsh undefine "${NAME}" --remove-all-storage 2>/dev/null || true
+    log "VM '${NAME}' deleted"
+}
+
+vm_console() {
+    local NAME="${1:?VM name required}"
+    local VNC_PORT
+    VNC_PORT=$(virsh vncdisplay "${NAME}" 2>/dev/null | tr -d ':' || echo "")
+
+    if [[ -n "${VNC_PORT}" ]]; then
+        local ACTUAL_PORT=$((5900 + VNC_PORT))
+        log "VNC console for '${NAME}': vnc://localhost:${ACTUAL_PORT}"
+        log "Or use the web UI: https://$(hostname -I | awk '{print $1}'):8006/machines"
+    else
+        warn "No VNC display found. VM may not be running."
+    fi
+}
+
+vm_attach_iso() {
+    local NAME="${1:?VM name required}"
+    local ISO="${2:?ISO path required}"
+
+    if [[ ! -f "${ISO}" ]]; then
+        err "ISO not found: ${ISO}"
+        exit 1
+    fi
+
+    virsh change-media "${NAME}" --insert hdc "${ISO}" --config 2>/dev/null || \
+    virsh attach-disk "${NAME}" "${ISO}" hdc --type cdrom --mode readonly 2>/dev/null
+
+    log "ISO attached to '${NAME}': ${ISO}"
+    log "Boot from ISO: clovervisor vm start ${NAME}"
+}
+
+vm_snapshot() {
+    local NAME="${1:?VM name required}"
+    local SNAP_NAME="${2:-snap-$(date +%Y%m%d-%H%M%S)}"
+
+    virsh snapshot-create-as "${NAME}" "${SNAP_NAME}" \
+        --description "CloverVisor snapshot $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --atomic
+
+    log "Snapshot '${SNAP_NAME}' created for VM '${NAME}'"
+}
+
+vm_snapshots() {
+    local NAME="${1:?VM name required}"
+    virsh snapshot-list "${NAME}"
+}
+
+vm_restore() {
+    local NAME="${1:?VM name required}"
+    local SNAP_NAME="${2:?Snapshot name required}"
+    virsh snapshot-revert "${NAME}" "${SNAP_NAME}"
+    log "VM '${NAME}' restored to snapshot '${SNAP_NAME}'"
+}
+
+vm_migrate() {
+    local NAME="${1:?VM name required}"
+    local DEST="${2:?Destination host required}"
+
+    log "Live migrating '${NAME}' to ${DEST}..."
+    virsh migrate --live --persistent --undefinesource \
+        "${NAME}" "qemu+ssh://${DEST}/system" \
+        --verbose
+
+    log "VM '${NAME}' migrated to ${DEST}"
+}
+
+vm_clone() {
+    local NAME="${1:?Source VM name required}"
+    local CLONE_NAME="${2:?Clone name required}"
+
+    virt-clone --original "${NAME}" --name "${CLONE_NAME}" --auto-clone
+    log "VM '${NAME}' cloned as '${CLONE_NAME}'"
+}
+
+vm_info() {
+    local NAME="${1:?VM name required}"
+    echo -e "${BOLD}VM: ${NAME}${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    virsh dominfo "${NAME}"
+    echo ""
+    echo -e "${BOLD}Block Devices:${NC}"
+    virsh domblklist "${NAME}"
+    echo ""
+    echo -e "${BOLD}Network Interfaces:${NC}"
+    virsh domiflist "${NAME}"
+    echo ""
+    echo -e "${BOLD}IP Addresses:${NC}"
+    virsh domifaddr "${NAME}" 2>/dev/null || echo "  (not available -- VM may be stopped or agent not installed)"
+    echo ""
+    echo -e "${BOLD}Snapshots:${NC}"
+    virsh snapshot-list "${NAME}" 2>/dev/null || echo "  (none)"
+}
+
+# =============================================================================
+# STORAGE MANAGEMENT
+# =============================================================================
+storage_status() {
+    echo -e "${BOLD}Storage Pools${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    virsh pool-list --all --details 2>/dev/null
+
+    echo ""
+    echo -e "${BOLD}ZFS Pools${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    zpool list 2>/dev/null || echo "  ZFS not available or no pools configured"
+
+    echo ""
+    echo -e "${BOLD}Disk Usage${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    df -h "${DATA_DIR}" 2>/dev/null
+}
+
+storage_create_pool() {
+    local POOL_NAME="${1:-clovervisor-pool}"
+    local DISKS="${2:-}"
+
+    if [[ -z "${DISKS}" ]]; then
+        err "Usage: clovervisor storage create-pool <name> <disk1> [disk2] [disk3...]"
+        err "Example: clovervisor storage create-pool mypool /dev/sdb /dev/sdc"
+        echo ""
+        echo "Available disks:"
+        lsblk -dpno NAME,SIZE,TYPE,MOUNTPOINT | grep disk
+        exit 1
+    fi
+
+    shift  # Remove pool name
+
+    local DISK_COUNT=$#
+
+    if [[ ${DISK_COUNT} -eq 1 ]]; then
+        log "Creating ZFS pool '${POOL_NAME}' (single disk)..."
+        zpool create -f -o ashift=12 "${POOL_NAME}" "$@"
+    elif [[ ${DISK_COUNT} -eq 2 ]]; then
+        log "Creating ZFS pool '${POOL_NAME}' (mirror)..."
+        zpool create -f -o ashift=12 "${POOL_NAME}" mirror "$@"
+    elif [[ ${DISK_COUNT} -ge 3 ]]; then
+        log "Creating ZFS pool '${POOL_NAME}' (RAIDZ1)..."
+        zpool create -f -o ashift=12 "${POOL_NAME}" raidz "$@"
+    fi
+
+    # Set optimal properties
+    zfs set compression=lz4 "${POOL_NAME}"
+    zfs set atime=off "${POOL_NAME}"
+    zfs set recordsize=64K "${POOL_NAME}"
+
+    # Create datasets
+    zfs create "${POOL_NAME}/vms"
+    zfs create "${POOL_NAME}/isos"
+    zfs create "${POOL_NAME}/templates"
+    zfs create "${POOL_NAME}/backups"
+
+    log "ZFS pool '${POOL_NAME}' created and configured"
+    zpool status "${POOL_NAME}"
+}
+
+# =============================================================================
+# NETWORK MANAGEMENT
+# =============================================================================
+network_status() {
+    echo -e "${BOLD}Virtual Networks${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    virsh net-list --all 2>/dev/null
+
+    echo ""
+    echo -e "${BOLD}OVS Bridges${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ovs-vsctl show 2>/dev/null || echo "  Open vSwitch not running"
+
+    echo ""
+    echo -e "${BOLD}Physical Interfaces${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ip -br link show | grep -v "lo\|veth\|docker\|ovs-"
+}
+
+network_create_vlan() {
+    local VLAN_ID="${1:?VLAN ID required}"
+    local BRIDGE="${OVS_BRIDGE:-clover-br0}"
+
+    ovs-vsctl add-br "clover-vlan${VLAN_ID}" "${BRIDGE}" "${VLAN_ID}"
+    log "VLAN ${VLAN_ID} created on bridge ${BRIDGE}"
+}
+
+# =============================================================================
+# GPU PASSTHROUGH
+# =============================================================================
+gpu_list() {
+    echo -e "${BOLD}GPU / PCI Devices Available for Passthrough${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    lspci -nn | grep -iE "vga|3d|display|nvidia|amd.*radeon|intel.*graphics"
+
+    echo ""
+    echo -e "${BOLD}IOMMU Groups${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if [[ -d /sys/kernel/iommu_groups ]]; then
+        for g in /sys/kernel/iommu_groups/*/devices/*; do
+            local GRPID
+            GRPID=$(echo "$g" | awk -F/ '{print $5}')
+            local DEV
+            DEV=$(basename "$g")
+            local DESC
+            DESC=$(lspci -nns "${DEV}" 2>/dev/null || echo "unknown")
+            echo "  Group ${GRPID}: ${DESC}"
+        done
+    else
+        warn "IOMMU not available. Enable VT-d (Intel) or AMD-Vi in BIOS."
+    fi
+}
+
+gpu_bind() {
+    local PCI_ID="${1:?PCI device ID required (e.g., 10de:1b80)}"
+    log "Binding PCI device ${PCI_ID} to vfio-pci..."
+
+    # Update config
+    sed -i "s/^VFIO_PCI_IDS=.*/VFIO_PCI_IDS=\"${PCI_ID}\"/" "${CONFIG_DIR}/hypervisor.conf"
+    sed -i "s/^GPU_PASSTHROUGH_ENABLED=.*/GPU_PASSTHROUGH_ENABLED=true/" "${CONFIG_DIR}/hypervisor.conf"
+
+    "${SCRIPT_DIR}/setup-gpu-passthrough.sh"
+    log "Device bound. Reboot required for full effect."
+}
+
+# =============================================================================
+# CLUSTER / HA
+# =============================================================================
+cluster_status() {
+    echo -e "${BOLD}Cluster Status${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    if [[ "${CLUSTER_ENABLED:-false}" != "true" ]]; then
+        warn "Clustering not enabled. Run: clovervisor cluster init"
+        return
+    fi
+
+    echo -e "${BOLD}Nodes:${NC}"
+    pcs status nodes 2>/dev/null || echo "  Cluster not initialized"
+
+    echo ""
+    echo -e "${BOLD}Resources:${NC}"
+    pcs status resources 2>/dev/null || true
+
+    echo ""
+    echo -e "${BOLD}WireGuard Mesh:${NC}"
+    wg show 2>/dev/null || echo "  WireGuard not configured"
+}
+
+cluster_init() {
+    local CLUSTER_NAME="${1:?Cluster name required}"
+    local NODE_NAME="${2:-$(hostname)}"
+
+    log "Initializing HA cluster: ${CLUSTER_NAME}"
+
+    # Update config
+    sed -i "s/^CLUSTER_ENABLED=.*/CLUSTER_ENABLED=true/" "${CONFIG_DIR}/hypervisor.conf"
+    sed -i "s/^CLOVERVISOR_CLUSTER_NAME=.*/CLOVERVISOR_CLUSTER_NAME=\"${CLUSTER_NAME}\"/" "${CONFIG_DIR}/hypervisor.conf"
+    sed -i "s/^CLOVERVISOR_NODE_NAME=.*/CLOVERVISOR_NODE_NAME=\"${NODE_NAME}\"/" "${CONFIG_DIR}/hypervisor.conf"
+
+    # Set up Corosync + Pacemaker
+    systemctl enable corosync pacemaker pcsd
+    systemctl start pcsd
+
+    log "Cluster '${CLUSTER_NAME}' initialized on node '${NODE_NAME}'"
+    log "Add nodes: clovervisor cluster join <this-ip> (from other nodes)"
+    log "Web UI: https://$(hostname -I | awk '{print $1}'):8006/cluster"
+}
+
+cluster_join() {
+    local MASTER_IP="${1:?Master node IP required}"
+    log "Joining cluster at ${MASTER_IP}..."
+    pcs cluster node add "$(hostname)" --start
+    log "Joined cluster. Check: clovervisor cluster status"
+}
+
+# =============================================================================
+# BACKUP
+# =============================================================================
+backup_vm() {
+    local NAME="${1:?VM name required}"
+    local DEST="${2:-${DATA_DIR}/backups}"
+
+    mkdir -p "${DEST}"
+    local TIMESTAMP
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    local BACKUP_DIR="${DEST}/${NAME}-${TIMESTAMP}"
+    mkdir -p "${BACKUP_DIR}"
+
+    log "Backing up VM '${NAME}'..."
+
+    # Dump XML config
+    virsh dumpxml "${NAME}" > "${BACKUP_DIR}/${NAME}.xml"
+
+    # Snapshot + copy disk
+    local DISKS
+    DISKS=$(virsh domblklist "${NAME}" --details 2>/dev/null | awk '/disk/ {print $4}')
+
+    for disk in ${DISKS}; do
+        if [[ -f "${disk}" ]]; then
+            local DISK_NAME
+            DISK_NAME=$(basename "${disk}")
+            log "  Copying disk: ${DISK_NAME}..."
+            cp "${disk}" "${BACKUP_DIR}/${DISK_NAME}"
+        fi
+    done
+
+    # Create checksum
+    (cd "${BACKUP_DIR}" && sha256sum * > SHA256SUMS)
+
+    # Compress
+    log "  Compressing backup..."
+    tar -cf - -C "${DEST}" "$(basename "${BACKUP_DIR}")" | zstd -T0 -10 > "${BACKUP_DIR}.tar.zst"
+    rm -rf "${BACKUP_DIR}"
+
+    local SIZE
+    SIZE=$(du -h "${BACKUP_DIR}.tar.zst" | cut -f1)
+    log "Backup complete: ${BACKUP_DIR}.tar.zst (${SIZE})"
+}
+
+backup_restore() {
+    local ARCHIVE="${1:?Backup archive required}"
+
+    if [[ ! -f "${ARCHIVE}" ]]; then
+        err "Backup not found: ${ARCHIVE}"
+        exit 1
+    fi
+
+    local TEMP_DIR
+    TEMP_DIR=$(mktemp -d)
+
+    log "Extracting backup..."
+    zstd -d "${ARCHIVE}" --stdout | tar -xf - -C "${TEMP_DIR}"
+
+    local BACKUP_DIR
+    BACKUP_DIR=$(find "${TEMP_DIR}" -maxdepth 1 -type d | tail -1)
+    local XML
+    XML=$(find "${BACKUP_DIR}" -name "*.xml" | head -1)
+    local VM_NAME
+    VM_NAME=$(basename "${XML}" .xml)
+
+    log "Restoring VM '${VM_NAME}'..."
+
+    # Copy disks back
+    for disk in "${BACKUP_DIR}"/*.qcow2; do
+        [[ -f "${disk}" ]] && cp "${disk}" "${DATA_DIR}/vms/"
+    done
+
+    # Define VM
+    virsh define "${XML}"
+
+    rm -rf "${TEMP_DIR}"
+    log "VM '${VM_NAME}' restored. Start with: clovervisor vm start ${VM_NAME}"
+}
+
+# =============================================================================
+# SYSTEM STATUS
+# =============================================================================
+status() {
+    echo ""
+    echo -e "  ${BOLD}${CYAN}CloverVisor${NC} ${BOLD}Hypervisor Blackbox Edition v${VERSION}${NC}"
+    echo -e "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    # System
+    local UPTIME
+    UPTIME=$(uptime -p 2>/dev/null || uptime)
+    local HOSTNAME
+    HOSTNAME=$(hostname)
+    local IP
+    IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local KERNEL
+    KERNEL=$(uname -r)
+
+    echo -e "  ${BOLD}System${NC}"
+    echo -e "    Host:     ${HOSTNAME}"
+    echo -e "    IP:       ${IP}"
+    echo -e "    Kernel:   ${KERNEL}"
+    echo -e "    Uptime:   ${UPTIME}"
+    echo -e "    Web UI:   https://${IP}:8006"
+    echo ""
+
+    # Resources
+    local CPU_MODEL
+    CPU_MODEL=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs)
+    local CPU_CORES
+    CPU_CORES=$(nproc)
+    local RAM_TOTAL
+    RAM_TOTAL=$(awk '/MemTotal/ {printf "%.1fGB", $2/1048576}' /proc/meminfo 2>/dev/null)
+    local RAM_USED
+    RAM_USED=$(awk '/MemTotal/ {t=$2} /MemAvailable/ {printf "%.1fGB", (t-$2)/1048576}' /proc/meminfo 2>/dev/null)
+    local LOAD
+    LOAD=$(awk '{print $1, $2, $3}' /proc/loadavg 2>/dev/null)
+
+    echo -e "  ${BOLD}Hardware${NC}"
+    echo -e "    CPU:      ${CPU_MODEL} (${CPU_CORES} cores)"
+    echo -e "    RAM:      ${RAM_USED} / ${RAM_TOTAL}"
+    echo -e "    Load:     ${LOAD}"
+
+    # IOMMU
+    if dmesg 2>/dev/null | grep -qi "IOMMU enabled\|DMAR.*IOMMU\|AMD-Vi"; then
+        echo -e "    IOMMU:    ${GREEN}enabled${NC}"
+    else
+        echo -e "    IOMMU:    ${YELLOW}not detected${NC}"
+    fi
+    echo ""
+
+    # VMs
+    local VM_TOTAL
+    VM_TOTAL=$(virsh list --all --name 2>/dev/null | grep -c . || echo 0)
+    local VM_RUNNING
+    VM_RUNNING=$(virsh list --name 2>/dev/null | grep -c . || echo 0)
+
+    echo -e "  ${BOLD}Virtual Machines${NC}"
+    echo -e "    Total:    ${VM_TOTAL}"
+    echo -e "    Running:  ${GREEN}${VM_RUNNING}${NC}"
+    echo ""
+
+    # Services
+    echo -e "  ${BOLD}Services${NC}"
+    for svc in libvirtd cockpit openvswitch-switch; do
+        if systemctl is-active --quiet "${svc}" 2>/dev/null; then
+            echo -e "    ${svc}: ${GREEN}active${NC}"
+        else
+            echo -e "    ${svc}: ${RED}inactive${NC}"
+        fi
+    done
+
+    # SSH status
+    if systemctl is-active --quiet ssh 2>/dev/null; then
+        echo -e "    ssh: ${YELLOW}active (blackbox override)${NC}"
+    else
+        echo -e "    ssh: ${GREEN}disabled (blackbox mode)${NC}"
+    fi
+    echo ""
+
+    # Storage
+    echo -e "  ${BOLD}Storage${NC}"
+    if command -v zpool &>/dev/null && zpool list &>/dev/null 2>&1; then
+        zpool list -H 2>/dev/null | while read -r pool size alloc free cap _ _ health _; do
+            echo -e "    ZFS ${pool}: ${alloc}/${size} (${cap} used) [${health}]"
+        done
+    fi
+    df -h "${DATA_DIR}" 2>/dev/null | tail -1 | awk '{printf "    Disk: %s / %s (%s used)\n", $3, $2, $5}'
+    echo ""
+
+    # Cluster
+    if [[ "${CLUSTER_ENABLED:-false}" == "true" ]]; then
+        echo -e "  ${BOLD}Cluster${NC}"
+        echo -e "    Name:     ${CLOVERVISOR_CLUSTER_NAME:-not set}"
+        echo -e "    Node:     ${CLOVERVISOR_NODE_NAME:-$(hostname)}"
+        local NODE_COUNT
+        NODE_COUNT=$(pcs status nodes 2>/dev/null | grep -c "Online" || echo 0)
+        echo -e "    Nodes:    ${NODE_COUNT} online"
+        echo ""
+    fi
+}
+
+# =============================================================================
+# SSH TOGGLE
+# =============================================================================
+ssh_cmd() {
+    case "${1:-status}" in
+        enable)  "${SCRIPT_DIR}/ssh-toggle.sh" enable ;;
+        disable) "${SCRIPT_DIR}/ssh-toggle.sh" disable ;;
+        status)  "${SCRIPT_DIR}/ssh-toggle.sh" status ;;
+        *)       err "Usage: clovervisor ssh {enable|disable|status}" ;;
+    esac
+}
+
+# =============================================================================
+# TEMPLATES
+# =============================================================================
+templates_list() {
+    echo -e "${BOLD}VM Templates${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    printf "%-22s %-10s %-6s %-6s %-8s %s\n" "ID" "OS" "RAM" "vCPU" "DISK" "DESCRIPTION"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    if [[ -f "${TEMPLATE_DIR}/catalog.json" ]]; then
+        jq -r '.templates[] | [.id, .os, (.ram_mb|tostring)+"MB", (.vcpus|tostring), (.disk_gb|tostring)+"GB", .desc] | @tsv' \
+            "${TEMPLATE_DIR}/catalog.json" 2>/dev/null | \
+            while IFS=$'\t' read -r id os ram vcpu disk desc; do
+                printf "%-22s %-10s %-6s %-6s %-8s %s\n" "${id}" "${os}" "${ram}" "${vcpu}" "${disk}" "${desc}"
+            done
+    fi
+}
+
+# =============================================================================
+# HELP
+# =============================================================================
+show_help() {
+    echo ""
+    echo -e "  ${BOLD}${CYAN}clovervisor${NC} v${VERSION} -- CloverOS Hypervisor Blackbox CLI"
+    echo ""
+    echo -e "  ${BOLD}VM Management:${NC}"
+    echo "    clovervisor vm list                        List all VMs"
+    echo "    clovervisor vm create <name> [template]    Create a new VM"
+    echo "    clovervisor vm start <name>                Start a VM"
+    echo "    clovervisor vm stop <name>                 Graceful shutdown"
+    echo "    clovervisor vm kill <name>                 Force stop"
+    echo "    clovervisor vm restart <name>              Reboot a VM"
+    echo "    clovervisor vm pause <name>                Pause a VM"
+    echo "    clovervisor vm resume <name>               Resume a paused VM"
+    echo "    clovervisor vm delete <name> [--force]     Delete a VM + disks"
+    echo "    clovervisor vm info <name>                 Detailed VM info"
+    echo "    clovervisor vm console <name>              VNC console URL"
+    echo "    clovervisor vm attach-iso <name> <iso>     Attach ISO to VM"
+    echo "    clovervisor vm snapshot <name> [snap-name] Create snapshot"
+    echo "    clovervisor vm snapshots <name>            List snapshots"
+    echo "    clovervisor vm restore <name> <snap-name>  Restore snapshot"
+    echo "    clovervisor vm clone <source> <clone>      Clone a VM"
+    echo "    clovervisor vm migrate <name> <dest-host>  Live migrate VM"
+    echo ""
+    echo -e "  ${BOLD}Templates:${NC}"
+    echo "    clovervisor templates list                 List VM templates"
+    echo ""
+    echo -e "  ${BOLD}Storage:${NC}"
+    echo "    clovervisor storage status                 Storage pool overview"
+    echo "    clovervisor storage create-pool <n> <disk> Create ZFS pool"
+    echo ""
+    echo -e "  ${BOLD}Network:${NC}"
+    echo "    clovervisor network status                 Network overview"
+    echo "    clovervisor network create-vlan <id>       Create VLAN"
+    echo ""
+    echo -e "  ${BOLD}GPU Passthrough:${NC}"
+    echo "    clovervisor gpu list                       List GPUs + IOMMU groups"
+    echo "    clovervisor gpu bind <pci-id>              Bind device to VFIO"
+    echo ""
+    echo -e "  ${BOLD}Cluster / HA:${NC}"
+    echo "    clovervisor cluster status                 Cluster status"
+    echo "    clovervisor cluster init <name>            Initialize cluster"
+    echo "    clovervisor cluster join <master-ip>       Join existing cluster"
+    echo ""
+    echo -e "  ${BOLD}Backup:${NC}"
+    echo "    clovervisor backup <name> [dest]           Backup a VM"
+    echo "    clovervisor restore <archive>              Restore from backup"
+    echo ""
+    echo -e "  ${BOLD}Security:${NC}"
+    echo "    clovervisor ssh enable|disable|status      Toggle SSH access"
+    echo ""
+    echo -e "  ${BOLD}System:${NC}"
+    echo "    clovervisor status                         Full system status"
+    echo "    clovervisor --help                         This help message"
+    echo "    clovervisor --version                      Version info"
+    echo ""
+    echo -e "  ${BOLD}Web UI:${NC} https://$(hostname -I 2>/dev/null | awk '{print $1}'):8006"
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCHER
+# =============================================================================
+CMD="${1:-}"
+SUB="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${CMD}" in
+    vm)
+        case "${SUB}" in
+            list)        vm_list ;;
+            create)      vm_create "$@" ;;
+            start)       vm_start "$@" ;;
+            stop)        vm_stop "$@" ;;
+            kill)        vm_kill "$@" ;;
+            restart)     vm_restart "$@" ;;
+            pause)       vm_pause "$@" ;;
+            resume)      vm_resume "$@" ;;
+            delete)      vm_delete "$@" ;;
+            info)        vm_info "$@" ;;
+            console)     vm_console "$@" ;;
+            attach-iso)  vm_attach_iso "$@" ;;
+            snapshot)    vm_snapshot "$@" ;;
+            snapshots)   vm_snapshots "$@" ;;
+            restore)     vm_restore "$@" ;;
+            clone)       vm_clone "$@" ;;
+            migrate)     vm_migrate "$@" ;;
+            *)           err "Unknown vm command: ${SUB}"; show_help ;;
+        esac
+        ;;
+    templates)
+        case "${SUB}" in
+            list)  templates_list ;;
+            *)     templates_list ;;
+        esac
+        ;;
+    storage)
+        case "${SUB}" in
+            status)       storage_status ;;
+            create-pool)  storage_create_pool "$@" ;;
+            *)            storage_status ;;
+        esac
+        ;;
+    network)
+        case "${SUB}" in
+            status)       network_status ;;
+            create-vlan)  network_create_vlan "$@" ;;
+            *)            network_status ;;
+        esac
+        ;;
+    gpu)
+        case "${SUB}" in
+            list)   gpu_list ;;
+            bind)   gpu_bind "$@" ;;
+            *)      gpu_list ;;
+        esac
+        ;;
+    cluster)
+        case "${SUB}" in
+            status) cluster_status ;;
+            init)   cluster_init "$@" ;;
+            join)   cluster_join "$@" ;;
+            *)      cluster_status ;;
+        esac
+        ;;
+    backup)   backup_vm "${SUB}" "$@" ;;
+    restore)  backup_restore "${SUB}" "$@" ;;
+    ssh)      ssh_cmd "${SUB}" ;;
+    status)   status ;;
+    --help|-h|help) show_help ;;
+    --version|-v)   echo "clovervisor v${VERSION}" ;;
+    "")       status ;;
+    *)        err "Unknown command: ${CMD}"; show_help; exit 1 ;;
+esac
