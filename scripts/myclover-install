@@ -85,8 +85,32 @@ else
     log "Detected BIOS/Legacy boot mode"
 fi
 
-# Wipe and partition
-wipefs -a "/dev/${TARGET_DISK}"
+# --- Release the disk before wiping -----------------------------------------
+log "Releasing /dev/${TARGET_DISK}..."
+
+# Turn off any swap partitions on the target disk
+for sw in $(swapon --show=NAME --noheadings 2>/dev/null | grep "^/dev/${TARGET_DISK}" || true); do
+    swapoff "$sw" && log "  swapoff $sw" || true
+done
+
+# Unmount every mounted partition on the target disk (reverse order for nested mounts)
+for mp in $(findmnt -rn -o TARGET -S "/dev/${TARGET_DISK}" 2>/dev/null; \
+            findmnt -rn -o TARGET -S "/dev/${TARGET_DISK}"[0-9]* 2>/dev/null; \
+            findmnt -rn -o TARGET -S "/dev/${TARGET_DISK}p"[0-9]* 2>/dev/null) ; do
+    umount -l "$mp" && log "  unmounted $mp" || true
+done
+
+# Give the kernel a moment to settle device references
+sleep 1
+
+# Wipe partition signatures
+wipefs -a "/dev/${TARGET_DISK}" || {
+    # Fallback: zero first + last 1 MiB (covers GPT + MBR + backup GPT)
+    warn "wipefs failed — falling back to dd zero-wipe of partition tables"
+    dd if=/dev/zero of="/dev/${TARGET_DISK}" bs=1M count=1  conv=notrunc 2>/dev/null
+    dd if=/dev/zero of="/dev/${TARGET_DISK}" bs=1M count=1  seek=$((DISK_GB * 1024 - 1)) conv=notrunc 2>/dev/null
+    partprobe "/dev/${TARGET_DISK}" 2>/dev/null || true
+}
 
 if [[ "${BOOT_MODE}" == "uefi" ]]; then
     parted -s "/dev/${TARGET_DISK}" \
