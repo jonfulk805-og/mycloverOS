@@ -53,9 +53,42 @@ fi
 systemctl enable ollama
 systemctl start ollama
 
-# Pull default model
-log "Pulling default AI model (${DEFAULT_AI_MODEL:-phi3:mini})..."
-ollama pull "${DEFAULT_AI_MODEL:-phi3:mini}" &
+# --- Pull AI model (hardware-aware) ------------------------------------------
+log "Setting up AI models..."
+AI_MODEL="${DEFAULT_AI_MODEL:-phi3:mini}"
+
+# Detect available RAM for hardware-aware model selection
+TOTAL_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+log "Detected RAM: ${TOTAL_RAM_MB}MB"
+
+# Auto-select best model based on available RAM
+if [[ "${AI_MODEL}" == "auto" ]] || [[ "${AI_MODEL}" == "dolphin-x1" ]]; then
+    if [[ ${TOTAL_RAM_MB} -ge 32000 ]]; then
+        # 32GB+ (Edge Pro, Rack) → Dolphin-X1 Q6_K
+        log "Hardware tier: 32GB+ RAM → Dolphin-X1-8B Q6_K"
+        AI_MODEL="hf.co/dphn/Dolphin-X1-8B-GGUF:Q6_K"
+    elif [[ ${TOTAL_RAM_MB} -ge 16000 ]]; then
+        # 16-32GB (Edge, Field Laptop) → Dolphin-X1 Q4_K_M
+        log "Hardware tier: 16-32GB RAM → Dolphin-X1-8B Q4_K_M"
+        AI_MODEL="hf.co/dphn/Dolphin-X1-8B-GGUF:Q4_K_M"
+    elif [[ ${TOTAL_RAM_MB} -ge 8000 ]]; then
+        # 8-16GB → Dolphin-X1 Q3_K_L (still fits)
+        log "Hardware tier: 8-16GB RAM → Dolphin-X1-8B Q3_K_L"
+        AI_MODEL="hf.co/dphn/Dolphin-X1-8B-GGUF:Q3_K_L"
+    else
+        # Under 8GB (Puck, constrained) → Fall back to phi3:mini
+        log "Hardware tier: <8GB RAM → phi3:mini (lightweight)"
+        AI_MODEL="phi3:mini"
+    fi
+fi
+
+log "Pulling AI model: ${AI_MODEL}..."
+ollama pull "${AI_MODEL}" &
+
+# Also create Dolphin-X1 Modelfile alias if it exists
+if [[ -f /opt/myclover/ai-models/dolphin-x1.Modelfile ]]; then
+    ollama create dolphin-x1 -f /opt/myclover/ai-models/dolphin-x1.Modelfile 2>/dev/null &
+fi
 
 # --- Install Portainer -------------------------------------------------------
 log "Deploying Portainer..."
@@ -103,6 +136,49 @@ EOF
 
 cd /opt/cloverstack/traefik && docker compose up -d 2>/dev/null || log "Traefik setup deferred"
 
+# --- CloverDesktop (Containerized GUI) ----------------------------------------
+if [[ "${ENABLE_CLOVERDESKTOP:-true}" == "true" ]]; then
+    log "Setting up CloverDesktop..."
+
+    # Create directories
+    mkdir -p /opt/cloverstack/cloverdesktop/compose
+    mkdir -p /var/lib/cloverdesktop/exports
+
+    # Install cloverdesktop CLI
+    chmod +x /usr/local/bin/cloverdesktop 2>/dev/null || true
+
+    # Auto-select desktop based on hardware if set to "auto"
+    DESKTOP="${DEFAULT_DESKTOP:-auto}"
+    if [[ "${DESKTOP}" == "auto" ]]; then
+        if [[ ${TOTAL_RAM_MB:-0} -ge 4096 ]]; then
+            DESKTOP="kde"
+        elif [[ ${TOTAL_RAM_MB:-0} -ge 2048 ]]; then
+            DESKTOP="mate"
+        else
+            DESKTOP="xfce"
+        fi
+        log "Auto-selected desktop: ${DESKTOP} (based on ${TOTAL_RAM_MB:-0}MB RAM)"
+    fi
+
+    if [[ "${DESKTOP}" != "none" ]]; then
+        log "Deploying containerized desktop: ${DESKTOP}..."
+        # Pull the desktop image in background (large download)
+        /usr/local/bin/cloverdesktop deploy "${DESKTOP}" \
+            --port "${DESKTOP_PORT:-3000}" &
+        DESKTOP_PID=$!
+        log "Desktop deployment started in background (PID: ${DESKTOP_PID})"
+    fi
+
+    # Load Portainer desktop templates
+    if [[ -f /opt/cloverstack/portainer/templates-desktops.json ]]; then
+        log "Desktop Portainer templates available at: /opt/cloverstack/portainer/templates-desktops.json"
+    fi
+
+    # Allow desktop port through firewall
+    ufw allow "${DESKTOP_PORT:-3000}/tcp" 2>/dev/null || true
+    ufw allow "${DESKTOP_VNC_PORT:-3001}/tcp" 2>/dev/null || true
+fi
+
 # --- Enable default modules --------------------------------------------------
 log "Enabling default CloverStack modules..."
 for mod in ${CLOVERSTACK_DEFAULT_MODULES:-netmon sentrylog myclover-vault chappie clovermarket}; do
@@ -124,23 +200,6 @@ if [[ -f "/etc/myclover/modules.d/clovermarket.enabled" ]]; then
         echo "clover-classic" > /etc/myclover/themes/active
         clovermarket-ctl theme apply clover-classic 2>/dev/null || true
     fi
-fi
-
-# --- CloverDesktop setup -----------------------------------------------------
-if [[ "${CLOVERDESKTOP_ENABLED:-true}" == "true" ]]; then
-    log "Setting up CloverDesktop..."
-    mkdir -p /opt/cloverstack/modules/cloverdesktop/{templates,running,exports,mctvs/installed}
-    mkdir -p /var/lib/cloverdesktop/licenses
-
-    # Open desktop ports in firewall
-    ufw allow 6901:6920/tcp comment "CloverDesktop" 2>/dev/null || true
-
-    # Sync Portainer templates if Portainer is running
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "portainer"; then
-        log "CloverDesktop Portainer templates available"
-    fi
-
-    log "CloverDesktop ready. Run 'cloverdesktop list' to see available desktops."
 fi
 
 # --- Generate machine ID -----------------------------------------------------
@@ -177,9 +236,62 @@ ufw allow 8080/tcp  # mycloverOS Setup Wizard
 ufw allow 8082/tcp  # Traefik Dashboard
 ufw --force enable
 
+# --- CloverVisor (Hypervisor Blackbox Edition) --------------------------------
+if [[ -f /usr/local/bin/clovervisor ]] && [[ -f /etc/myclover/clovervisor.d/hypervisor.conf ]]; then
+    log "Provisioning CloverVisor Hypervisor..."
+
+    # Load hypervisor config
+    source /etc/myclover/clovervisor.d/hypervisor.conf 2>/dev/null || true
+
+    # Set node name
+    NODE_NAME="$(hostname)"
+    sed -i "s/^CLOVERVISOR_NODE_NAME=.*/CLOVERVISOR_NODE_NAME=\"${NODE_NAME}\"/" /etc/myclover/clovervisor.d/hypervisor.conf
+
+    # Enable hypervisor services
+    systemctl enable libvirtd 2>/dev/null || true
+    systemctl start libvirtd 2>/dev/null || true
+    systemctl enable virtlogd 2>/dev/null || true
+    systemctl enable openvswitch-switch 2>/dev/null || true
+    systemctl start openvswitch-switch 2>/dev/null || true
+    systemctl enable cockpit.socket 2>/dev/null || true
+    systemctl start cockpit.socket 2>/dev/null || true
+
+    # Run storage + network setup
+    /opt/clovervisor/scripts/setup-storage.sh 2>/dev/null || true
+    /opt/clovervisor/scripts/setup-network.sh 2>/dev/null || true
+
+    # Generate integrity baseline
+    /opt/clovervisor/scripts/integrity-baseline.sh 2>/dev/null || true
+
+    # Set tuned profile for VM host
+    tuned-adm profile virtual-host 2>/dev/null || true
+
+    # Blackbox: disable SSH (managed via web UI)
+    if [[ "${SSH_ENABLED:-false}" == "false" ]]; then
+        systemctl disable ssh 2>/dev/null || true
+        systemctl stop ssh 2>/dev/null || true
+        log "SSH disabled (blackbox mode). Enable via: clovervisor ssh enable"
+    fi
+
+    # Allow CloverVisor ports through firewall
+    ufw allow 8006/tcp comment "CloverVisor Web UI" 2>/dev/null || true
+    ufw allow 5900:5999/tcp comment "VNC consoles" 2>/dev/null || true
+    ufw allow 16509/tcp comment "libvirt migration" 2>/dev/null || true
+    ufw allow 16514/tcp comment "libvirt TLS" 2>/dev/null || true
+    ufw allow 51820/udp comment "WireGuard CloverMesh" 2>/dev/null || true
+
+    log "CloverVisor provisioning complete"
+    log "Web UI: https://$(hostname -I | awk '{print $1}'):8006"
+fi
+
 # --- Cleanup -----------------------------------------------------------------
 rm -f "${FIRST_BOOT_FLAG}"
 
 log "=== Provisioning Complete ==="
-log "Access CloverStack at: https://$(hostname -I | awk '{print $1}'):9443"
-log "Run 'cloverstack-ctl status' to check module status"
+if [[ -f /usr/local/bin/clovervisor ]]; then
+    log "CloverVisor Web UI: https://$(hostname -I | awk '{print $1}'):8006"
+    log "Run 'clovervisor status' for system overview"
+else
+    log "Access CloverStack at: https://$(hostname -I | awk '{print $1}'):9443"
+    log "Run 'cloverstack-ctl status' to check module status"
+fi
