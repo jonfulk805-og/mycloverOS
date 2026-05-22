@@ -1,0 +1,798 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS Firewall Edition -- Chroot Build Hook
+# Enterprise firewall/router: nftables, Suricata IDS/IPS, AdGuard Home DNS,
+# WireGuard/OpenVPN/IPsec VPN, multi-WAN, traffic shaping, CloverMesh HA.
+# =============================================================================
+set -e
+
+echo "[firewall] Running Firewall Edition chroot hook..."
+
+# =============================================================================
+# 1. DIRECTORY STRUCTURE
+# =============================================================================
+echo "[firewall] Creating Firewall directory structure..."
+
+mkdir -p /opt/cloverwall/{config,scripts,rules,certs,geoip}
+mkdir -p /var/lib/cloverwall/{state,logs,captures,reports}
+mkdir -p /var/log/cloverwall
+mkdir -p /etc/myclover/cloverwall.d
+
+# =============================================================================
+# 2. FIREWALL CONFIGURATION
+# =============================================================================
+echo "[firewall] Writing Firewall configuration..."
+
+cat > /etc/myclover/cloverwall.d/firewall.conf <<'FWCONF'
+# =============================================================================
+# CloverOS Firewall Edition Configuration
+# =============================================================================
+
+# Identity
+CLOVERWALL_EDITION="firewall"
+CLOVERWALL_VERSION="1.0.0"
+CLOVERWALL_NODE_NAME=""
+CLOVERWALL_WEB_PORT=8443
+
+# Interfaces (set during setup wizard)
+WAN_INTERFACE=""
+WAN2_INTERFACE=""
+LAN_INTERFACE=""
+OPT1_INTERFACE=""
+OPT2_INTERFACE=""
+
+# LAN Defaults
+LAN_SUBNET="192.168.1.0/24"
+LAN_GATEWAY="192.168.1.1"
+LAN_DHCP_START="192.168.1.100"
+LAN_DHCP_END="192.168.1.254"
+LAN_DOMAIN="clover.local"
+
+# Multi-WAN
+MULTIWAN_ENABLED=false
+MULTIWAN_MODE="failover"
+MULTIWAN_BALANCE_RATIO="50:50"
+MULTIWAN_HEALTH_CHECK="ping"
+MULTIWAN_HEALTH_TARGET="1.1.1.1"
+MULTIWAN_HEALTH_INTERVAL=10
+
+# DNS Filtering
+DNS_FILTER="adguard"
+DNS_UPSTREAM="1.1.1.1,9.9.9.9,8.8.8.8"
+DNS_DOH_ENABLED=true
+DNS_BLOCKLISTS="adguard,malware,tracking,phishing"
+ADGUARD_PORT=3000
+
+# IDS/IPS (Suricata)
+IDS_ENABLED=true
+IDS_MODE="ips"
+IDS_HOME_NET="192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+IDS_RULE_UPDATE="daily"
+IDS_RULE_SOURCES="et/open,oisf/trafficid"
+
+# VPN — WireGuard
+WG_ENABLED=true
+WG_PORT=51820
+WG_SUBNET="10.10.0.0/24"
+WG_DNS="10.10.0.1"
+
+# VPN — OpenVPN
+OVPN_ENABLED=false
+OVPN_PORT=1194
+OVPN_PROTOCOL="udp"
+OVPN_SUBNET="10.20.0.0/24"
+
+# VPN — IPsec
+IPSEC_ENABLED=false
+
+# Traffic Shaping / QoS
+QOS_ENABLED=false
+QOS_WAN_UPLOAD=""
+QOS_WAN_DOWNLOAD=""
+QOS_DEFAULT_QUEUE="fq_codel"
+
+# Captive Portal
+CAPTIVE_PORTAL_ENABLED=false
+CAPTIVE_PORTAL_INTERFACE=""
+CAPTIVE_PORTAL_TIMEOUT=3600
+
+# GeoIP Blocking
+GEOIP_ENABLED=false
+GEOIP_BLOCK_COUNTRIES=""
+GEOIP_ALLOW_COUNTRIES=""
+
+# Logging
+LOG_LEVEL="normal"
+LOG_RETENTION=90
+NETFLOW_ENABLED=false
+NETFLOW_COLLECTOR=""
+
+# HA / CloverMesh
+MESH_ENABLED=false
+MESH_ROLE="firewall-primary"
+MESH_PEER=""
+MESH_VIP=""
+MESH_SYNC_STATES=true
+MESH_SYNC_RULES=true
+FWCONF
+
+# =============================================================================
+# 3. NFTABLES BASE RULESET
+# =============================================================================
+echo "[firewall] Creating nftables base ruleset..."
+
+cat > /opt/cloverwall/rules/base.nft <<'NFTBASE'
+#!/usr/sbin/nft -f
+# CloverWall Base Firewall Ruleset
+
+flush ruleset
+
+# --- Tables ------------------------------------------------------------------
+table inet cloverwall {
+
+    # Connection tracking
+    set blacklist_v4 {
+        type ipv4_addr
+        flags timeout
+        timeout 24h
+    }
+
+    set blacklist_v6 {
+        type ipv6_addr
+        flags timeout
+        timeout 24h
+    }
+
+    set rate_limit {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 60s
+    }
+
+    # --- Input chain (traffic TO the firewall) ---
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Allow established/related
+        ct state established,related accept
+        ct state invalid drop
+
+        # Allow loopback
+        iifname "lo" accept
+
+        # Drop blacklisted
+        ip saddr @blacklist_v4 drop
+        ip6 saddr @blacklist_v6 drop
+
+        # Allow ICMP (limited)
+        ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 10/second accept
+        ip6 nexthdr icmpv6 limit rate 10/second accept
+
+        # Allow DHCP (LAN)
+        udp dport { 67, 68 } accept
+
+        # Allow DNS (LAN only)
+        iifname != $WAN_IF tcp dport 53 accept
+        iifname != $WAN_IF udp dport 53 accept
+
+        # Allow SSH (LAN only)
+        iifname != $WAN_IF tcp dport 22 accept
+
+        # Allow web UI (LAN only)
+        iifname != $WAN_IF tcp dport 8443 accept
+
+        # Allow WireGuard
+        udp dport 51820 accept
+
+        # Allow OpenVPN (if enabled)
+        # udp dport 1194 accept
+
+        # Allow Suricata logs
+        # (Suricata runs inline via NFQUEUE)
+
+        # Allow CloverMesh (WireGuard mesh + cluster)
+        udp dport 51821 accept
+        tcp dport { 5405, 2224 } accept
+
+        # Log + drop everything else
+        limit rate 5/second log prefix "[CloverWall DROP] " level info
+        drop
+    }
+
+    # --- Forward chain (traffic THROUGH the firewall) ---
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+
+        # Allow LAN -> WAN (outbound)
+        iifname != $WAN_IF oifname $WAN_IF accept
+
+        # Allow LAN -> LAN (inter-VLAN if configured)
+        # Rules added dynamically by cloverwall CLI
+
+        # IDS/IPS via Suricata NFQUEUE
+        # ip protocol tcp queue num 0 bypass
+        # ip protocol udp queue num 0 bypass
+
+        log prefix "[CloverWall FWD-DROP] " drop
+    }
+
+    # --- Output chain (traffic FROM the firewall) ---
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+
+    # --- NAT ---
+    chain prerouting {
+        type nat hook prerouting priority -100;
+        # Port forwards added dynamically
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority 100;
+        oifname $WAN_IF masquerade
+    }
+}
+NFTBASE
+
+# =============================================================================
+# 4. INSTALL ADGUARD HOME
+# =============================================================================
+echo "[firewall] Installing AdGuard Home..."
+
+cat > /opt/cloverwall/scripts/install-adguard.sh <<'ADGUARD'
+#!/bin/bash
+set -euo pipefail
+
+AGH_VERSION="0.107.52"
+AGH_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${AGH_VERSION}/AdGuardHome_linux_amd64.tar.gz"
+AGH_DIR="/opt/cloverwall/adguard"
+
+if [[ ! -f "${AGH_DIR}/AdGuardHome" ]]; then
+    echo "[firewall] Downloading AdGuard Home ${AGH_VERSION}..."
+    mkdir -p "${AGH_DIR}"
+    wget -qO /tmp/agh.tar.gz "${AGH_URL}"
+    tar -xzf /tmp/agh.tar.gz -C /tmp
+    mv /tmp/AdGuardHome/* "${AGH_DIR}/"
+    rm -rf /tmp/agh.tar.gz /tmp/AdGuardHome
+fi
+
+# Default config
+cat > "${AGH_DIR}/AdGuardHome.yaml" <<'AGHCONF'
+http:
+  pprof:
+    port: 6060
+    enabled: false
+  address: 0.0.0.0:3000
+  session_ttl: 720h
+users: []
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  upstream_dns:
+    - https://dns.cloudflare.com/dns-query
+    - https://dns.quad9.net/dns-query
+    - 1.1.1.1
+    - 9.9.9.9
+  bootstrap_dns:
+    - 1.1.1.1
+    - 9.9.9.9
+  protection_enabled: true
+  blocking_mode: default
+  safe_search:
+    enabled: false
+  filtering_enabled: true
+  parental_enabled: false
+  safebrowsing_enabled: true
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
+    name: AdAway Default Blocklist
+  - enabled: true
+    url: https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-agh-online.txt
+    name: Malware filter
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_4.txt
+    name: Dan Pollock hosts file
+AGHCONF
+
+echo "[firewall] AdGuard Home installed"
+ADGUARD
+chmod +x /opt/cloverwall/scripts/install-adguard.sh
+
+# AdGuard Home systemd service
+cat > /etc/systemd/system/adguardhome.service <<'AGHSVC'
+[Unit]
+Description=AdGuard Home DNS Filter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/cloverwall/adguard/AdGuardHome -c /opt/cloverwall/adguard/AdGuardHome.yaml -w /opt/cloverwall/adguard
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+AGHSVC
+
+# =============================================================================
+# 5. SURICATA IDS/IPS CONFIGURATION
+# =============================================================================
+echo "[firewall] Configuring Suricata IDS/IPS..."
+
+mkdir -p /etc/suricata/rules
+cat > /etc/suricata/cloverwall.yaml <<'SURICONF'
+# CloverWall Suricata IDS/IPS Configuration
+%YAML 1.1
+---
+
+vars:
+  address-groups:
+    HOME_NET: "[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]"
+    EXTERNAL_NET: "!$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+
+default-log-dir: /var/log/suricata/
+
+stats:
+  enabled: yes
+  interval: 60
+
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert
+        - dns
+        - tls
+        - http
+        - flow
+        - netflow
+
+app-layer:
+  protocols:
+    tls:
+      enabled: yes
+    http:
+      enabled: yes
+    dns:
+      enabled: yes
+    smtp:
+      enabled: yes
+
+detect:
+  profile: high
+  sgh-mpm-context: auto
+
+af-packet:
+  - interface: eth0
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+
+rule-files:
+  - suricata.rules
+SURICONF
+
+# Suricata rule update cron
+cat > /etc/cron.d/cloverwall-suricata <<'SURICRON'
+# Update Suricata rules daily at 3am
+0 3 * * * root suricata-update --suricata-conf /etc/suricata/cloverwall.yaml && systemctl reload suricata 2>/dev/null
+SURICRON
+
+# =============================================================================
+# 6. WIREGUARD VPN SERVER SETUP
+# =============================================================================
+echo "[firewall] Setting up WireGuard VPN..."
+
+cat > /opt/cloverwall/scripts/setup-wireguard.sh <<'WGSETUP'
+#!/bin/bash
+set -euo pipefail
+
+source /etc/myclover/cloverwall.d/firewall.conf 2>/dev/null || true
+
+[[ "${WG_ENABLED}" != "true" ]] && exit 0
+
+WG_DIR="/etc/wireguard"
+mkdir -p "${WG_DIR}"
+
+if [[ ! -f "${WG_DIR}/server_privatekey" ]]; then
+    echo "[firewall] Generating WireGuard server keys..."
+    wg genkey | tee "${WG_DIR}/server_privatekey" | wg pubkey > "${WG_DIR}/server_publickey"
+    chmod 600 "${WG_DIR}/server_privatekey"
+fi
+
+SERVER_PRIVKEY=$(cat "${WG_DIR}/server_privatekey")
+SERVER_PUBKEY=$(cat "${WG_DIR}/server_publickey")
+
+cat > "${WG_DIR}/wg0.conf" <<WGCONF
+[Interface]
+Address = ${WG_SUBNET%/*}.1/24
+ListenPort = ${WG_PORT:-51820}
+PrivateKey = ${SERVER_PRIVKEY}
+PostUp = nft add rule inet cloverwall forward iifname wg0 accept
+PostDown = nft delete rule inet cloverwall forward iifname wg0 accept
+SaveConfig = false
+
+# Peers added via: cloverwall vpn add-peer <name>
+WGCONF
+
+chmod 600 "${WG_DIR}/wg0.conf"
+systemctl enable wg-quick@wg0 2>/dev/null || true
+
+echo "[firewall] WireGuard VPN configured — Public key: ${SERVER_PUBKEY}"
+WGSETUP
+chmod +x /opt/cloverwall/scripts/setup-wireguard.sh
+
+# =============================================================================
+# 7. MULTI-WAN FAILOVER / LOAD BALANCE
+# =============================================================================
+echo "[firewall] Setting up multi-WAN..."
+
+cat > /opt/cloverwall/scripts/multiwan-monitor.sh <<'MULTIWAN'
+#!/bin/bash
+# CloverWall Multi-WAN health monitor + failover
+set -euo pipefail
+
+source /etc/myclover/cloverwall.d/firewall.conf 2>/dev/null || true
+
+[[ "${MULTIWAN_ENABLED}" != "true" ]] && exit 0
+
+LOG="/var/log/cloverwall/multiwan.log"
+STATE_DIR="/var/lib/cloverwall/state"
+mkdir -p "${STATE_DIR}"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "${LOG}"; }
+
+check_wan() {
+    local iface="$1"
+    local target="${MULTIWAN_HEALTH_TARGET:-1.1.1.1}"
+    local gw
+    gw=$(ip route show dev "${iface}" | grep default | awk '{print $3}' | head -1)
+    
+    if [[ -z "${gw}" ]]; then
+        echo "down"
+        return
+    fi
+    
+    if ping -I "${iface}" -c 3 -W 2 "${target}" &>/dev/null; then
+        echo "up"
+    else
+        echo "down"
+    fi
+}
+
+# Check primary WAN
+wan1_status=$(check_wan "${WAN_INTERFACE}")
+wan2_status="down"
+[[ -n "${WAN2_INTERFACE}" ]] && wan2_status=$(check_wan "${WAN2_INTERFACE}")
+
+prev_wan1=$(cat "${STATE_DIR}/wan1.state" 2>/dev/null || echo "unknown")
+prev_wan2=$(cat "${STATE_DIR}/wan2.state" 2>/dev/null || echo "unknown")
+
+echo "${wan1_status}" > "${STATE_DIR}/wan1.state"
+echo "${wan2_status}" > "${STATE_DIR}/wan2.state"
+
+# Failover logic
+if [[ "${wan1_status}" == "down" ]] && [[ "${prev_wan1}" == "up" ]]; then
+    log "WAN1 (${WAN_INTERFACE}) DOWN — failing over to WAN2"
+    ip route replace default via "$(ip route show dev "${WAN2_INTERFACE}" | grep default | awk '{print $3}')" dev "${WAN2_INTERFACE}" 2>/dev/null || true
+elif [[ "${wan1_status}" == "up" ]] && [[ "${prev_wan1}" == "down" ]]; then
+    log "WAN1 (${WAN_INTERFACE}) UP — restoring primary route"
+    ip route replace default via "$(ip route show dev "${WAN_INTERFACE}" | grep default | awk '{print $3}')" dev "${WAN_INTERFACE}" 2>/dev/null || true
+fi
+
+log "WAN1=${wan1_status} WAN2=${wan2_status}"
+MULTIWAN
+chmod +x /opt/cloverwall/scripts/multiwan-monitor.sh
+
+# Multi-WAN health check cron
+cat >> /etc/cron.d/cloverwall-suricata <<'MWCRON'
+
+# Multi-WAN health check (every 10 seconds via systemd timer)
+MWCRON
+
+# Systemd timer for faster health checks
+cat > /etc/systemd/system/cloverwall-multiwan.service <<'MWSVC'
+[Unit]
+Description=CloverWall Multi-WAN Health Monitor
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cloverwall/scripts/multiwan-monitor.sh
+MWSVC
+
+cat > /etc/systemd/system/cloverwall-multiwan.timer <<'MWTIMER'
+[Unit]
+Description=CloverWall Multi-WAN Health Check Timer
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=10
+
+[Install]
+WantedBy=timers.target
+MWTIMER
+
+# =============================================================================
+# 8. CLOVERMESH HA (FIREWALL CLUSTERING)
+# =============================================================================
+echo "[firewall] Configuring CloverMesh HA for firewall..."
+
+mkdir -p /opt/clovermesh/{config,scripts,keys}
+mkdir -p /etc/myclover/clovermesh.d
+
+cat > /etc/myclover/clovermesh.d/defaults.conf <<'MESHCONF'
+# =============================================================================
+# CloverMesh — Firewall Edition HA Configuration
+# =============================================================================
+
+MESH_CLUSTER_NAME=""
+MESH_NODE_NAME=""
+MESH_NODE_ROLE="firewall-primary"
+MESH_TRANSPORT="wireguard"
+MESH_HEARTBEAT_INTERVAL=1000
+MESH_HEARTBEAT_TIMEOUT=3000
+MESH_VIP_ENABLED=true
+MESH_VIP_ADDRESS=""
+
+# State synchronization
+MESH_SYNC_STATES=true
+MESH_SYNC_RULES=true
+MESH_SYNC_DHCP=true
+MESH_SYNC_DNS=true
+MESH_SYNC_CONNTRACK=true
+
+# Failover
+FAILOVER_AUTO=true
+FAILOVER_PREEMPT=true
+FAILOVER_PRIORITY=100
+MESHCONF
+
+# Conntrack state sync script
+cat > /opt/clovermesh/scripts/sync-conntrack.sh <<'CTSYNC'
+#!/bin/bash
+# Sync connection tracking state between firewall peers
+set -euo pipefail
+
+source /etc/myclover/clovermesh.d/defaults.conf 2>/dev/null || true
+
+[[ "${MESH_SYNC_CONNTRACK}" != "true" ]] && exit 0
+
+# conntrackd handles real-time state sync
+if [[ -f /etc/conntrackd/conntrackd.conf ]]; then
+    conntrackd -C /etc/conntrackd/conntrackd.conf -c
+fi
+CTSYNC
+chmod +x /opt/clovermesh/scripts/sync-conntrack.sh
+
+# =============================================================================
+# 9. COCKPIT WEB UI (FIREWALL SKIN)
+# =============================================================================
+echo "[firewall] Customizing web management UI..."
+
+mkdir -p /etc/cockpit
+cat > /etc/cockpit/cockpit.conf <<'COCKPITCONF'
+[WebService]
+Origins = https://localhost:8443 wss://localhost:8443
+LoginTitle = CloverWall
+MaxStartups = 10
+AllowUnencrypted = false
+
+[Session]
+IdleTimeout = 30
+
+[Log]
+Fatal = criticals warnings
+COCKPITCONF
+
+# Custom branding
+mkdir -p /usr/share/cockpit/branding/cloverwall
+cat > /usr/share/cockpit/branding/cloverwall/branding.css <<'BRAND'
+body.login-pf { background-color: #1a0a0a; }
+.login-pf .container { background: rgba(26, 10, 10, 0.9); }
+#brand { font-size: 1.8em; color: #ff6b35; font-weight: bold; }
+#brand::before { content: "🛡️ "; }
+#badge { display: none; }
+BRAND
+
+cat > /usr/share/cockpit/branding/cloverwall/default.html <<'BRANDHTML'
+<style>@import "branding.css";</style>
+<span id="brand">CloverWall</span>
+BRANDHTML
+
+ln -sf /usr/share/cockpit/branding/cloverwall /usr/share/cockpit/branding/default 2>/dev/null || true
+
+# Port 8443
+mkdir -p /etc/systemd/system/cockpit.socket.d
+cat > /etc/systemd/system/cockpit.socket.d/listen.conf <<'LISTEN'
+[Socket]
+ListenStream=
+ListenStream=8443
+LISTEN
+
+# =============================================================================
+# 10. IP FORWARDING + KERNEL TUNING
+# =============================================================================
+echo "[firewall] Configuring kernel for routing..."
+
+cat > /etc/sysctl.d/90-cloverwall.conf <<'SYSCTL'
+# CloverWall — Router/Firewall Kernel Tuning
+
+# Enable IP forwarding
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
+# Prevent source routing attacks
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+
+# Disable ICMP redirects (we're a router)
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+
+# Enable reverse path filtering (anti-spoofing)
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+
+# SYN flood protection
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_max_syn_backlog = 2048
+net.ipv4.tcp_synack_retries = 2
+
+# Increase conntrack limits
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_established = 86400
+
+# TCP hardening
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_fin_timeout = 15
+
+# Log martian packets
+net.ipv4.conf.all.log_martians = 1
+
+# Ignore broadcast pings
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+# Increase network buffers
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.netdev_max_backlog = 5000
+SYSCTL
+
+# =============================================================================
+# 11. DHCP SERVER CONFIGURATION
+# =============================================================================
+echo "[firewall] Configuring DHCP server..."
+
+cat > /etc/dhcp/dhcpd.conf <<'DHCPCONF'
+# CloverWall DHCP Server
+authoritative;
+default-lease-time 86400;
+max-lease-time 172800;
+
+# DNS from CloverWall (AdGuard Home)
+option domain-name "clover.local";
+option domain-name-servers 192.168.1.1;
+
+# LAN subnet (default, customize in setup wizard)
+subnet 192.168.1.0 netmask 255.255.255.0 {
+    range 192.168.1.100 192.168.1.254;
+    option routers 192.168.1.1;
+    option subnet-mask 255.255.255.0;
+    option broadcast-address 192.168.1.255;
+}
+
+# Static leases added via: cloverwall dhcp static <mac> <ip> <hostname>
+DHCPCONF
+
+# =============================================================================
+# 12. CONSOLE BANNER
+# =============================================================================
+echo "[firewall] Setting console banner..."
+
+cat > /etc/issue <<'BANNER'
+
+  ╔══════════════════════════════════════════════════════╗
+  ║              🛡️  CloverWall Firewall                 ║
+  ║         Protect. Route. Filter. Secure.              ║
+  ║                                                      ║
+  ║  Web UI:    https://<ip>:8443                        ║
+  ║  CLI:       cloverwall help                          ║
+  ║  DNS:       https://<ip>:3000  (AdGuard Home)        ║
+  ╚══════════════════════════════════════════════════════╝
+
+BANNER
+
+# =============================================================================
+# 13. CLOVERWALL SYSTEMD SERVICE
+# =============================================================================
+echo "[firewall] Creating CloverWall service..."
+
+cat > /etc/systemd/system/cloverwall.service <<'SERVICE'
+[Unit]
+Description=CloverWall Firewall Platform
+After=network-online.target
+Wants=network-online.target
+Before=suricata.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/cloverwall/scripts/cloverwall-startup.sh
+ExecStop=/opt/cloverwall/scripts/cloverwall-shutdown.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat > /opt/cloverwall/scripts/cloverwall-startup.sh <<'STARTUP'
+#!/bin/bash
+echo "[cloverwall] Starting CloverWall Firewall..."
+
+source /etc/myclover/cloverwall.d/firewall.conf 2>/dev/null || true
+
+# Apply nftables ruleset
+nft -f /opt/cloverwall/rules/base.nft 2>/dev/null || echo "[cloverwall] WARNING: nftables rules failed"
+
+# Start DNS filter
+if [[ "${DNS_FILTER}" == "adguard" ]]; then
+    /opt/cloverwall/scripts/install-adguard.sh 2>/dev/null || true
+    systemctl start adguardhome 2>/dev/null || true
+fi
+
+# Start Suricata IDS/IPS
+if [[ "${IDS_ENABLED:-true}" == "true" ]]; then
+    suricata-update 2>/dev/null || true
+    systemctl start suricata 2>/dev/null || true
+fi
+
+# Start DHCP
+systemctl start isc-dhcp-server 2>/dev/null || true
+
+# Start WireGuard VPN
+if [[ "${WG_ENABLED:-true}" == "true" ]]; then
+    /opt/cloverwall/scripts/setup-wireguard.sh 2>/dev/null || true
+    systemctl start wg-quick@wg0 2>/dev/null || true
+fi
+
+# Start Multi-WAN monitor
+if [[ "${MULTIWAN_ENABLED}" == "true" ]]; then
+    systemctl start cloverwall-multiwan.timer 2>/dev/null || true
+fi
+
+# Start dynamic routing (FRR)
+systemctl start frr 2>/dev/null || true
+
+echo "[cloverwall] CloverWall ready — protecting network"
+STARTUP
+chmod +x /opt/cloverwall/scripts/cloverwall-startup.sh
+
+cat > /opt/cloverwall/scripts/cloverwall-shutdown.sh <<'SHUTDOWN'
+#!/bin/bash
+echo "[cloverwall] Shutting down CloverWall..."
+nft flush ruleset
+echo "[cloverwall] Firewall rules flushed"
+SHUTDOWN
+chmod +x /opt/cloverwall/scripts/cloverwall-shutdown.sh
+
+systemctl enable cloverwall.service 2>/dev/null || true
+
+echo "[firewall] Firewall Edition chroot hook complete"
+echo "[firewall] nftables, Suricata, AdGuard, WireGuard, DHCP, multi-WAN configured"
