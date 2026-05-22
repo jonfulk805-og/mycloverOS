@@ -1,0 +1,116 @@
+# =============================================================================
+# mycloverOS Firewall Edition — Package List
+# Enterprise firewall/router: nftables, Suricata IDS/IPS, VPN, DNS filtering
+# Build: sudo ./build.sh firewall
+# =============================================================================
+
+# --- Core Firewall ---
+nftables
+iptables
+iptables-persistent
+conntrack
+conntrackd
+ipset
+
+# --- Intrusion Detection / Prevention (IDS/IPS) ---
+suricata
+suricata-update
+
+# --- DNS Filtering ---
+# AdGuard Home installed via hook (official binary)
+# Fallback: unbound for recursive DNS
+unbound
+unbound-anchor
+
+# --- VPN ---
+# WireGuard
+wireguard-tools
+# OpenVPN
+openvpn
+easy-rsa
+# IPsec/IKEv2
+strongswan
+strongswan-pki
+libcharon-extra-plugins
+
+# --- Network Services ---
+# DHCP server
+isc-dhcp-server
+# DNS forwarder
+dnsmasq
+# Dynamic DNS
+ddclient
+# NTP
+chrony
+# mDNS
+avahi-daemon
+
+# --- Traffic Shaping / QoS ---
+tc-flower
+iproute2
+
+# --- Network Monitoring ---
+ntopng
+darkstat
+vnstat
+iftop
+iptraf-ng
+nmap
+tcpdump
+tshark
+mtr-tiny
+traceroute
+
+# --- Proxy / Caching ---
+squid
+squidguard
+e2guardian
+
+# --- Captive Portal ---
+# nodogsplash (installed via hook)
+nginx-extras
+
+# --- Logging / Alerting ---
+rsyslog
+logrotate
+
+# --- High Availability ---
+keepalived
+conntrackd
+# CARP-style failover via keepalived VRRP
+
+# --- Multi-WAN ---
+# Handled by nftables rules + custom scripts
+ethtool
+bridge-utils
+vlan
+ifenslave
+
+# --- Dynamic Routing ---
+frr
+
+# --- SNMP Monitoring ---
+snmpd
+snmp
+
+# --- Certificates ---
+certbot
+
+# --- Web Management UI ---
+cockpit
+cockpit-networkmanager
+
+# --- Reporting ---
+# ntopng provides web-based traffic analysis
+# Custom CloverWall dashboard on :8443 (hook)
+
+# --- Misc ---
+tmux
+htop
+jq
+bc
+curl
+wget
+acl
+cron
+at
