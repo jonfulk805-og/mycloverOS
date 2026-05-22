@@ -26,7 +26,7 @@ err()  { echo -e "${RED}[mycloverOS]${NC} $*" >&2; }
 # --- Preflight ---------------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then
     err "Must run as root (live-build requires it)"
-    err "Usage: sudo ./build.sh [server|desktop|micro|kiosk|hypervisor]"
+    err "Usage: sudo ./build.sh [server|desktop|micro|kiosk|hypervisor|nas|creator|firewall|industrial]"
     exit 1
 fi
 
@@ -145,6 +145,18 @@ case "${EDITION}" in
     hypervisor)
         cp "${SCRIPT_DIR}/packages/hypervisor.list" config/package-lists/hypervisor.list.chroot
         ;;
+    nas)
+        cp "${SCRIPT_DIR}/packages/nas.list" config/package-lists/nas.list.chroot
+        ;;
+    creator)
+        cp "${SCRIPT_DIR}/packages/creator.list" config/package-lists/creator.list.chroot
+        ;;
+    firewall)
+        cp "${SCRIPT_DIR}/packages/firewall.list" config/package-lists/firewall.list.chroot
+        ;;
+    industrial)
+        cp "${SCRIPT_DIR}/packages/industrial.list" config/package-lists/industrial.list.chroot
+        ;;
 esac
 
 # CloverStack + networking (all editions)
@@ -207,6 +219,14 @@ if [[ -f "${SCRIPT_DIR}/scripts/clovervisor" ]]; then
     cp "${SCRIPT_DIR}/scripts/clovervisor" config/includes.chroot/usr/local/bin/
     chmod +x config/includes.chroot/usr/local/bin/clovervisor
 fi
+
+# Edition-specific CLI scripts
+for script in clovernas-edition clovercreate cloverwall cloverfactory; do
+    if [[ -f "${SCRIPT_DIR}/scripts/${script}" ]]; then
+        cp "${SCRIPT_DIR}/scripts/${script}" config/includes.chroot/usr/local/bin/
+        chmod +x config/includes.chroot/usr/local/bin/${script}
+    fi
+done
 
 # CloverNAS / CloverDeploy / CloverMesh CLI scripts
 for script in clovernas cloverdeploy clovermesh; do
