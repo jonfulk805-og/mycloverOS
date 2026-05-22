@@ -1,0 +1,83 @@
+# =============================================================================
+# mycloverOS Hypervisor Blackbox Edition -- Package List
+# Bare-metal Type 1 hypervisor. KVM/QEMU + libvirt + CloverVisor web UI.
+# Minimal footprint -- no desktop, no NAS protocols, no dev tools.
+# =============================================================================
+
+# --- Hypervisor Core (KVM/QEMU/libvirt) ---
+qemu-system-x86
+qemu-utils
+qemu-block-extra
+libvirt-daemon-system
+libvirt-clients
+virtinst
+libguestfs-tools
+
+# --- UEFI firmware for VMs ---
+ovmf
+
+# --- GPU Passthrough (VFIO/IOMMU) ---
+# Kernel modules: vfio, vfio_iommu_type1, vfio_pci, vfio_virqfd
+# GRUB flags added by build hook: intel_iommu=on amd_iommu=on iommu=pt
+driverctl
+
+# --- Storage Backends ---
+# ZFS (installed via chroot hook from contrib/backports)
+# LVM thin provisioning
+thin-provisioning-tools
+# Ceph client (for clustered storage)
+ceph-common
+# NVMe management
+nvme-cli
+# Disk health
+smartmontools
+
+# --- Virtual Networking ---
+openvswitch-switch
+openvswitch-common
+# VLAN support
+vlan
+# Bridge utilities (base has bridge-utils)
+ebtables
+
+# --- Cluster / High Availability ---
+corosync
+pacemaker
+pcs
+fence-agents
+resource-agents
+keepalived
+# DRBD for synchronous block replication
+drbd-utils
+
+# --- Web Management (Cockpit) ---
+cockpit
+cockpit-machines
+cockpit-storaged
+cockpit-networkmanager
+cockpit-pcp
+
+# --- Backup ---
+restic
+
+# --- Integrity / Verified Boot ---
+# dm-verity tools
+cryptsetup
+veritysetup
+# Trusted Platform Module
+tpm2-tools
+
+# --- Monitoring ---
+prometheus-node-exporter
+collectd
+lm-sensors
+
+# --- ISO management (for VM templates) ---
+genisoimage
+xorriso
+
+# --- Misc ---
+tuned
+irqbalance
+numactl
+hwloc
