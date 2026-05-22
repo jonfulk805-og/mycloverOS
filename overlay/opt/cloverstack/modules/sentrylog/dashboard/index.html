@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SentryLog — MyClover.Tech</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🛡</text></svg>">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --text:#e6edf3;--text-muted:#8b949e;
+  --green:#2ea043;--green-light:#3fb950;--green-bg:rgba(46,160,67,.12);
+  --red:#f85149;--red-bg:rgba(248,81,73,.12);
+  --yellow:#d29922;--yellow-bg:rgba(210,153,34,.12);
+  --blue:#58a6ff;--blue-bg:rgba(88,166,255,.12);
+  --orange:#d18616;--orange-bg:rgba(209,134,22,.12);
+  --purple:#bc8cff;--purple-bg:rgba(188,140,255,.12);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header-left{display:flex;align-items:center;gap:12px}
+.logo-icon{width:32px;height:32px}
+.header h1{font-size:20px;font-weight:600;letter-spacing:.5px}
+.header h1 span{color:var(--green-light)}
+.header-right{display:flex;align-items:center;gap:16px}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.status-dot.ok{background:var(--green-light);box-shadow:0 0 6px var(--green)}
+.status-dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
+.admin-link{font-size:13px;color:var(--text-muted);padding:6px 12px;border:1px solid var(--border);border-radius:6px;transition:.2s}
+.admin-link:hover{border-color:var(--green);color:var(--green-light);text-decoration:none}
+.last-refresh{font-size:12px;color:var(--text-muted)}
+
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:20px 24px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;display:flex;align-items:center;gap:14px;transition:.2s}
+.stat-card:hover{border-color:var(--green);transform:translateY(-1px)}
+.stat-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px}
+.stat-icon.logs{background:var(--green-bg)}
+.stat-icon.alerts{background:var(--red-bg)}
+.stat-icon.agents{background:var(--blue-bg)}
+.stat-icon.sources{background:var(--purple-bg)}
+.stat-value{font-size:28px;font-weight:700;line-height:1}
+.stat-label{font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+
+/* Search bar */
+.search-bar{padding:0 24px 16px;display:flex;gap:10px}
+.search-input{flex:1;padding:10px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none;transition:.2s}
+.search-input:focus{border-color:var(--green)}
+.search-input::placeholder{color:var(--text-muted)}
+.search-btn{padding:10px 20px;background:var(--green);color:white;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:.2s}
+.search-btn:hover{background:var(--green-light)}
+
+.main{display:grid;grid-template-columns:1fr 380px;gap:20px;padding:0 24px 24px}
+@media(max-width:900px){.main{grid-template-columns:1fr}}
+
+.section{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.section-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.section-title{font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+
+/* Log stream */
+.log-stream{max-height:520px;overflow-y:auto;font-family:'SF Mono',Consolas,'Liberation Mono',Menlo,monospace;font-size:12px}
+.log-entry{padding:8px 18px;border-bottom:1px solid rgba(48,54,61,.5);display:flex;gap:12px;transition:.15s;line-height:1.5}
+.log-entry:hover{background:rgba(255,255,255,.02)}
+.log-ts{color:var(--text-muted);flex-shrink:0;min-width:80px}
+.log-source{color:var(--blue);flex-shrink:0;min-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-level{flex-shrink:0;min-width:56px;text-align:center;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;text-transform:uppercase}
+.log-level.error{background:var(--red-bg);color:var(--red)}
+.log-level.warn{background:var(--yellow-bg);color:var(--yellow)}
+.log-level.info{background:var(--blue-bg);color:var(--blue)}
+.log-level.debug{background:rgba(139,148,158,.12);color:var(--text-muted)}
+.log-msg{flex:1;min-width:0;word-break:break-word;color:var(--text)}
+
+/* Security alerts (Wazuh) */
+.sec-feed{max-height:520px;overflow-y:auto}
+.sec-item{padding:12px 18px;border-bottom:1px solid var(--border);transition:.15s}
+.sec-item:hover{background:rgba(255,255,255,.02)}
+.sec-item:last-child{border-bottom:none}
+.sec-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.sec-level{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 8px;border-radius:3px}
+.sec-level.critical{background:var(--red-bg);color:var(--red)}
+.sec-level.high{background:var(--orange-bg);color:var(--orange)}
+.sec-level.medium{background:var(--yellow-bg);color:var(--yellow)}
+.sec-level.low{background:var(--blue-bg);color:var(--blue)}
+.sec-title{font-size:13px;font-weight:500}
+.sec-detail{font-size:11px;color:var(--text-muted);margin-top:4px}
+.sec-time{font-size:11px;color:var(--text-muted)}
+
+.empty-state{padding:40px 20px;text-align:center;color:var(--text-muted)}
+.empty-state .icon{font-size:36px;margin-bottom:12px}
+.empty-state p{font-size:14px}
+.conn-banner{padding:10px 24px;text-align:center;font-size:13px;display:none}
+.conn-banner.error{display:block;background:var(--red-bg);color:var(--red);border-bottom:1px solid rgba(248,81,73,.3)}
+.loading{display:flex;align-items:center;justify-content:center;padding:40px}
+.spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <svg class="logo-icon" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <rect x="15" y="10" width="70" height="80" rx="8" fill="none" stroke="#3fb950" stroke-width="4"/>
+      <path d="M50 30 L65 50 L50 70 L35 50 Z" fill="none" stroke="#2ea043" stroke-width="3"/>
+      <circle cx="50" cy="50" r="6" fill="#3fb950"/>
+      <line x1="50" y1="10" x2="50" y2="25" stroke="#3fb950" stroke-width="3"/>
+    </svg>
+    <h1><span>Sentry</span>Log</h1>
+  </div>
+  <div class="header-right">
+    <span class="last-refresh" id="lastRefresh">—</span>
+    <span><span class="status-dot ok" id="connDot"></span><span id="connText" style="font-size:13px">Connecting…</span></span>
+    <a class="admin-link" id="graylogLink" href="" target="_blank">Graylog Admin ↗</a>
+  </div>
+</div>
+
+<div class="conn-banner" id="connBanner"></div>
+
+<div class="stats-bar" id="statsBar">
+  <div class="stat-card"><div class="stat-icon logs">📝</div><div><div class="stat-value" id="statLogs">—</div><div class="stat-label">Messages (24h)</div></div></div>
+  <div class="stat-card"><div class="stat-icon alerts">🛡</div><div><div class="stat-value" id="statSecAlerts">—</div><div class="stat-label">Security Alerts</div></div></div>
+  <div class="stat-card"><div class="stat-icon agents">🔗</div><div><div class="stat-value" id="statAgents">—</div><div class="stat-label">Wazuh Agents</div></div></div>
+  <div class="stat-card"><div class="stat-icon sources">📡</div><div><div class="stat-value" id="statSources">—</div><div class="stat-label">Log Sources</div></div></div>
+</div>
+
+<div class="search-bar">
+  <input class="search-input" id="searchInput" type="text" placeholder="Search logs… (e.g. error, sshd, 404)">
+  <button class="search-btn" id="searchBtn" onclick="searchLogs()">Search</button>
+</div>
+
+<div class="main">
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">📜 Live Log Stream</span>
+      <span style="font-size:12px;color:var(--text-muted)" id="logCount"></span>
+    </div>
+    <div class="log-stream" id="logStream">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">🛡 Security Alerts</span>
+      <span style="font-size:12px;color:var(--text-muted)" id="secCount"></span>
+    </div>
+    <div class="sec-feed" id="secFeed">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Graylog API (proxied through nginx)
+const GRAYLOG_API = '/graylog-api';
+// Wazuh API (proxied through nginx)
+const WAZUH_API = '/wazuh-api';
+
+const REFRESH_MS = 10000;
+let graylogSessionToken = null;
+
+// --- Graylog helpers ---
+function graylogHeaders() {
+  // Default admin:admin base64
+  return {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Authorization': 'Basic ' + btoa('admin:admin'),
+    'X-Requested-By': 'NetMon-Dashboard'
+  };
+}
+
+async function graylogGet(path) {
+  const res = await fetch(GRAYLOG_API + path, { headers: graylogHeaders() });
+  if (!res.ok) throw new Error(`Graylog ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+
+async function graylogSearch(query = '*', range = 86400, limit = 50) {
+  const params = new URLSearchParams({ query, range, limit, sort: 'timestamp:desc' });
+  return graylogGet('/api/search/universal/relative?' + params);
+}
+
+// --- Wazuh helpers ---
+let wazuhToken = null;
+async function wazuhAuth() {
+  try {
+    const res = await fetch(WAZUH_API + '/security/user/authenticate', {
+      method: 'POST',
+      headers: { 'Authorization': 'Basic ' + btoa('wazuh-wui:wazuh-wui') }
+    });
+    const json = await res.json();
+    wazuhToken = json.data ? json.data.token : null;
+  } catch (e) { wazuhToken = null; }
+}
+
+async function wazuhGet(path) {
+  if (!wazuhToken) await wazuhAuth();
+  if (!wazuhToken) return null;
+  const res = await fetch(WAZUH_API + path, {
+    headers: { 'Authorization': 'Bearer ' + wazuhToken }
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// --- Render ---
+function renderLogs(messages) {
+  const stream = document.getElementById('logStream');
+  if (!messages || !messages.length) {
+    stream.innerHTML = '<div class="empty-state"><div class="icon">📝</div><p>No log messages yet.<br>Configure log inputs in <a href="" id="graylogEmptyLink" target="_blank">Graylog Admin</a></p></div>';
+    document.getElementById('logCount').textContent = '';
+    return;
+  }
+
+  stream.innerHTML = messages.map(m => {
+    const msg = m.message || {};
+    const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '—';
+    const source = msg.source || msg.gl2_source_input || '—';
+    const level = guessLevel(msg.level || msg.severity || msg.message || '');
+    const text = msg.message || JSON.stringify(msg);
+
+    return `<div class="log-entry">
+      <span class="log-ts">${escHtml(ts)}</span>
+      <span class="log-source" title="${escHtml(source)}">${escHtml(source)}</span>
+      <span class="log-level ${level.cls}">${level.label}</span>
+      <span class="log-msg">${escHtml(truncate(text, 200))}</span>
+    </div>`;
+  }).join('');
+  document.getElementById('logCount').textContent = `${messages.length} messages`;
+}
+
+function renderSecurityAlerts(alerts) {
+  const feed = document.getElementById('secFeed');
+  if (!alerts || !alerts.length) {
+    feed.innerHTML = '<div class="empty-state"><div class="icon">✅</div><p>No security alerts.<br>Wazuh agents will report here.</p></div>';
+    document.getElementById('secCount').textContent = '';
+    return;
+  }
+
+  const levelMap = (l) => {
+    if (l >= 12) return { cls: 'critical', label: 'Critical' };
+    if (l >= 8) return { cls: 'high', label: 'High' };
+    if (l >= 4) return { cls: 'medium', label: 'Medium' };
+    return { cls: 'low', label: 'Low' };
+  };
+
+  feed.innerHTML = alerts.map(a => {
+    const lv = levelMap(a.rule ? a.rule.level : 0);
+    const title = a.rule ? a.rule.description : 'Unknown alert';
+    const agent = a.agent ? a.agent.name : '—';
+    const ts = a.timestamp ? timeSince(new Date(a.timestamp)) : '—';
+
+    return `<div class="sec-item">
+      <div class="sec-header">
+        <span class="sec-level ${lv.cls}">${lv.label}</span>
+        <span class="sec-time">${ts}</span>
+      </div>
+      <div class="sec-title">${escHtml(title)}</div>
+      <div class="sec-detail">Agent: ${escHtml(agent)}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('secCount').textContent = `${alerts.length} alerts`;
+}
+
+// --- Helpers ---
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function truncate(s, n) { return s.length > n ? s.slice(0, n) + '…' : s; }
+function timeSince(date) {
+  const s = Math.floor((Date.now() - date) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+function guessLevel(raw) {
+  const s = String(raw).toLowerCase();
+  if (s.includes('error') || s.includes('crit') || s.includes('emerg') || s === '3' || s === '2' || s === '0' || s === '1') return { cls: 'error', label: 'ERR' };
+  if (s.includes('warn') || s === '4') return { cls: 'warn', label: 'WARN' };
+  if (s.includes('debug') || s === '7') return { cls: 'debug', label: 'DBG' };
+  return { cls: 'info', label: 'INFO' };
+}
+
+function setConnected(ok, msg) {
+  document.getElementById('connDot').className = 'status-dot ' + (ok ? 'ok' : 'err');
+  document.getElementById('connText').textContent = ok ? 'Connected' : 'Disconnected';
+  const banner = document.getElementById('connBanner');
+  if (!ok) { banner.className = 'conn-banner error'; banner.textContent = msg || 'Cannot reach SentryLog backends'; }
+  else { banner.className = 'conn-banner'; }
+}
+
+// --- Search ---
+async function searchLogs() {
+  const q = document.getElementById('searchInput').value.trim() || '*';
+  try {
+    const result = await graylogSearch(q);
+    renderLogs(result.messages || []);
+    document.getElementById('statLogs').textContent = result.total_results || 0;
+  } catch (e) { console.error('Search error:', e); }
+}
+
+document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchLogs(); });
+
+// --- Main loop ---
+async function refresh() {
+  let graylogOk = false, wazuhOk = false;
+
+  // Graylog
+  try {
+    const [searchResult, systemOverview] = await Promise.all([
+      graylogSearch('*', 86400, 50),
+      graylogGet('/api/system/overview').catch(() => null)
+    ]);
+    renderLogs(searchResult.messages || []);
+    document.getElementById('statLogs').textContent = formatNum(searchResult.total_results || 0);
+
+    // Try to count sources
+    if (searchResult.messages) {
+      const sources = new Set(searchResult.messages.map(m => m.message && m.message.source).filter(Boolean));
+      document.getElementById('statSources').textContent = sources.size;
+    }
+    graylogOk = true;
+  } catch (e) {
+    console.error('Graylog error:', e);
+    renderLogs([]);
+    document.getElementById('statLogs').textContent = '—';
+  }
+
+  // Wazuh
+  try {
+    const [agents, alerts] = await Promise.all([
+      wazuhGet('/agents?limit=500'),
+      wazuhGet('/alerts?limit=50&sort=-timestamp')
+    ]);
+
+    if (agents && agents.data) {
+      document.getElementById('statAgents').textContent = agents.data.total_affected_items || 0;
+    } else {
+      document.getElementById('statAgents').textContent = '—';
+    }
+
+    if (alerts && alerts.data) {
+      const items = alerts.data.affected_items || [];
+      renderSecurityAlerts(items);
+      document.getElementById('statSecAlerts').textContent = items.length;
+    } else {
+      renderSecurityAlerts([]);
+      document.getElementById('statSecAlerts').textContent = '—';
+    }
+    wazuhOk = true;
+  } catch (e) {
+    console.error('Wazuh error:', e);
+    renderSecurityAlerts([]);
+    document.getElementById('statSecAlerts').textContent = '—';
+    document.getElementById('statAgents').textContent = '—';
+  }
+
+  setConnected(graylogOk || wazuhOk, graylogOk ? '' : 'Cannot reach Graylog');
+  document.getElementById('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+function formatNum(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n;
+}
+
+// Set admin links
+(function() {
+  const base = location.origin.replace(':9001', ':9000');
+  document.getElementById('graylogLink').href = base;
+})();
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

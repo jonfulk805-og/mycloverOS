@@ -51,8 +51,8 @@ services:
     networks: [cloverstack]
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.netmon.rule=PathPrefix(`/netmon`)"
-      - "traefik.http.services.netmon.loadbalancer.server.port=8080"
+      - "traefik.http.routers.netmon-zabbix.rule=PathPrefix(`/zabbix`)"
+      - "traefik.http.services.netmon-zabbix.loadbalancer.server.port=8080"
 
   zabbix-agent:
     image: zabbix/zabbix-agent2:ubuntu-7.0-latest
@@ -68,6 +68,23 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     privileged: true
     networks: [cloverstack]
+
+  netmon-dashboard:
+    image: nginx:alpine
+    container_name: netmon-dashboard
+    restart: unless-stopped
+    depends_on: [zabbix-web]
+    volumes:
+      - ./dashboard/index.html:/usr/share/nginx/html/index.html:ro
+      - ./dashboard/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: ["8082:8080"]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.netmon.rule=PathPrefix(`/netmon`)"
+      - "traefik.http.services.netmon.loadbalancer.server.port=8080"
+      - "cloverstack.module=netmon"
+      - "cloverstack.dashboard=true"
 
 volumes:
   netmon-postgres-data:
