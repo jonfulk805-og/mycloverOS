@@ -248,6 +248,8 @@ cmd_start() {
         -e "RESOLUTION=${resolution}"
         -v "cloverdesktop-${desktop_id}-${instance}-home:/config"
         -v "/dev/shm:/dev/shm"
+        -v "/opt/cloverstack/modules/cloverdesktop/branding/wallpaper.png:/branding/wallpaper.png:ro"
+        -v "/opt/cloverstack/modules/cloverdesktop/branding/apply-wallpaper.sh:/custom-cont-init.d/90-clover-wallpaper:ro"
     )
 
     # Add password protection if set
