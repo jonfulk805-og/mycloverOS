@@ -1,0 +1,138 @@
+# =============================================================================
+# mycloverOS Creator Edition — Package List
+# Content creation workstation: video, audio, 3D, graphics, streaming, AI
+# Build: sudo ./build.sh creator
+# =============================================================================
+
+# --- Desktop Environment (XFCE — lightweight, customizable) ---
+xfce4
+xfce4-goodies
+xfce4-terminal
+xfce4-whiskermenu-plugin
+lightdm
+lightdm-gtk-greeter
+
+# --- Display / GPU ---
+xserver-xorg
+xserver-xorg-video-all
+mesa-utils
+mesa-vulkan-drivers
+vulkan-tools
+vainfo
+libva-drm2
+libva-x11-2
+intel-media-va-driver-non-free
+# NVIDIA drivers installed via hook if GPU detected
+
+# --- Video Production ---
+# OBS Studio (streaming + recording)
+obs-studio
+# Video editing
+kdenlive
+shotcut
+# Video encoding
+ffmpeg
+handbrake-cli
+x264
+x265
+# Screen capture
+peek
+flameshot
+
+# --- Audio Production ---
+audacity
+ardour
+lmms
+jack2
+qjackctl
+pulseaudio
+pavucontrol
+alsa-utils
+
+# --- 3D / Animation ---
+blender
+# Godot installed via hook (AppImage, latest stable)
+
+# --- Graphics / Design ---
+gimp
+inkscape
+krita
+darktable
+rawtherapee
+imagemagick
+graphicsmagick
+
+# --- Photography ---
+digikam
+rapid-photo-downloader
+
+# --- Document / Publishing ---
+scribus
+libreoffice-writer
+libreoffice-calc
+libreoffice-impress
+pandoc
+texlive-base
+
+# --- Web / Code ---
+# VS Code installed via hook (official .deb)
+nodejs
+npm
+git
+git-lfs
+
+# --- AI / ML Tools ---
+# Ollama installed via hook (official installer)
+# Stable Diffusion installed via Docker container
+python3-full
+python3-pip
+python3-venv
+python3-numpy
+python3-pillow
+
+# --- Streaming / Broadcasting ---
+# nginx-rtmp for self-hosted streaming
+nginx-extras
+# Chat overlay tools
+# StreamServer integration (Docker)
+
+# --- File Management ---
+thunar
+thunar-archive-plugin
+file-roller
+p7zip-full
+unrar
+
+# --- Web Browser ---
+firefox-esr
+chromium
+
+# --- Media Playback ---
+vlc
+mpv
+
+# --- Fonts (essential for creators) ---
+fonts-liberation
+fonts-noto
+fonts-noto-cjk
+fonts-noto-color-emoji
+fonts-roboto
+fonts-open-sans
+fonts-firacode
+fonts-cascadia-code
+
+# --- Networking ---
+curl
+wget
+rsync
+rclone
+filezilla
+openssh-client
+
+# --- System Utilities ---
+tmux
+htop
+neofetch
+gparted
+baobab
+timeshift
