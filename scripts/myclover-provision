@@ -284,6 +284,145 @@ if [[ -f /usr/local/bin/clovervisor ]] && [[ -f /etc/myclover/clovervisor.d/hype
     log "Web UI: https://$(hostname -I | awk '{print $1}'):8006"
 fi
 
+# --- CloverNAS (NAS Edition) --------------------------------------------------
+if [[ -f /usr/local/bin/clovernas-edition ]] && [[ -f /etc/myclover/clovernas.d/nas.conf ]]; then
+    log "Provisioning CloverNAS Storage Appliance..."
+    source /etc/myclover/clovernas.d/nas.conf 2>/dev/null || true
+
+    NODE_NAME="$(hostname)"
+    sed -i "s/^CLOVERNAS_NODE_NAME=.*/CLOVERNAS_NODE_NAME=\"${NODE_NAME}\"/" /etc/myclover/clovernas.d/nas.conf
+
+    # Enable ZFS
+    modprobe zfs 2>/dev/null || true
+    for svc in zfs-import-cache zfs-mount zfs-share zfs.target zfs-zed; do
+        systemctl enable "${svc}" 2>/dev/null || true
+    done
+
+    # Enable sharing services
+    systemctl enable smbd nmbd 2>/dev/null || true
+    systemctl enable nfs-kernel-server 2>/dev/null || true
+    systemctl enable cockpit.socket 2>/dev/null || true
+    systemctl enable clovernas 2>/dev/null || true
+
+    # Start Docker for app catalog
+    systemctl enable docker 2>/dev/null || true
+    systemctl start docker 2>/dev/null || true
+
+    # Firewall
+    ufw allow 8080/tcp comment "CloverNAS Web UI" 2>/dev/null || true
+    ufw allow 445/tcp comment "SMB" 2>/dev/null || true
+    ufw allow 2049/tcp comment "NFS" 2>/dev/null || true
+    ufw allow 51820/udp comment "WireGuard CloverMesh" 2>/dev/null || true
+
+    log "CloverNAS provisioning complete"
+    log "Web UI: https://$(hostname -I | awk '{print $1}'):8080"
+fi
+
+# --- CloverCreate (Creator Edition) ------------------------------------------
+if [[ -f /usr/local/bin/clovercreate ]] && [[ -f /etc/myclover/clovercreate.d/creator.conf ]]; then
+    log "Provisioning CloverCreate Workstation..."
+    source /etc/myclover/clovercreate.d/creator.conf 2>/dev/null || true
+
+    # GPU driver detection
+    /opt/clovercreate/scripts/gpu-setup.sh 2>/dev/null || true
+
+    # Enable desktop
+    systemctl enable lightdm 2>/dev/null || true
+
+    # Install Ollama
+    if [[ "${OLLAMA_ENABLED:-true}" == "true" ]]; then
+        if ! command -v ollama &>/dev/null; then
+            curl -fsSL https://ollama.com/install.sh | sh 2>/dev/null || true
+        fi
+        systemctl enable ollama 2>/dev/null || true
+    fi
+
+    # Enable services
+    systemctl enable clovercreate 2>/dev/null || true
+
+    # Firewall
+    ufw allow 1935/tcp comment "RTMP Streaming" 2>/dev/null || true
+    ufw allow 51820/udp comment "WireGuard CloverMesh" 2>/dev/null || true
+
+    log "CloverCreate provisioning complete"
+fi
+
+# --- CloverWall (Firewall Edition) --------------------------------------------
+if [[ -f /usr/local/bin/cloverwall ]] && [[ -f /etc/myclover/cloverwall.d/firewall.conf ]]; then
+    log "Provisioning CloverWall Firewall..."
+    source /etc/myclover/cloverwall.d/firewall.conf 2>/dev/null || true
+
+    NODE_NAME="$(hostname)"
+    sed -i "s/^CLOVERWALL_NODE_NAME=.*/CLOVERWALL_NODE_NAME=\"${NODE_NAME}\"/" /etc/myclover/cloverwall.d/firewall.conf
+
+    # Enable IP forwarding
+    sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
+    sysctl -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+
+    # Apply nftables base rules
+    nft -f /opt/cloverwall/rules/base.nft 2>/dev/null || true
+
+    # Install + start AdGuard Home
+    /opt/cloverwall/scripts/install-adguard.sh 2>/dev/null || true
+    systemctl enable adguardhome 2>/dev/null || true
+
+    # Start Suricata IDS
+    suricata-update 2>/dev/null || true
+    systemctl enable suricata 2>/dev/null || true
+
+    # Setup WireGuard VPN
+    /opt/cloverwall/scripts/setup-wireguard.sh 2>/dev/null || true
+
+    # Enable services
+    systemctl enable cloverwall 2>/dev/null || true
+    systemctl enable isc-dhcp-server 2>/dev/null || true
+    systemctl enable cockpit.socket 2>/dev/null || true
+
+    # Firewall ports (not using ufw — we run nftables directly)
+    log "CloverWall provisioning complete"
+    log "Web UI: https://$(hostname -I | awk '{print $1}'):8443"
+fi
+
+# --- CloverFactory (Industrial Edition) ---------------------------------------
+if [[ -f /usr/local/bin/cloverfactory ]] && [[ -f /etc/myclover/cloverfactory.d/industrial.conf ]]; then
+    log "Provisioning CloverFactory Industrial Platform..."
+    source /etc/myclover/cloverfactory.d/industrial.conf 2>/dev/null || true
+
+    NODE_NAME="$(hostname)"
+    sed -i "s/^CLOVERFACTORY_NODE_NAME=.*/CLOVERFACTORY_NODE_NAME=\"${NODE_NAME}\"/" /etc/myclover/cloverfactory.d/industrial.conf
+
+    # Enable MQTT broker
+    systemctl enable mosquitto 2>/dev/null || true
+    systemctl start mosquitto 2>/dev/null || true
+
+    # Install Node-RED
+    /opt/cloverfactory/scripts/install-nodered.sh 2>/dev/null || true
+    systemctl enable nodered 2>/dev/null || true
+
+    # Install InfluxDB + Grafana
+    /opt/cloverfactory/scripts/install-influxdb.sh 2>/dev/null || true
+    /opt/cloverfactory/scripts/install-grafana.sh 2>/dev/null || true
+
+    # Enable services
+    systemctl enable cloverfactory 2>/dev/null || true
+    systemctl enable watchdog 2>/dev/null || true
+    systemctl enable auditd 2>/dev/null || true
+    systemctl enable cockpit.socket 2>/dev/null || true
+
+    # OT network segmentation
+    /opt/cloverfactory/scripts/setup-network-segmentation.sh 2>/dev/null || true
+
+    # Firewall
+    ufw allow 8443/tcp comment "CloverFactory Web UI" 2>/dev/null || true
+    ufw allow 1883/tcp comment "MQTT" 2>/dev/null || true
+    ufw allow 1880/tcp comment "Node-RED" 2>/dev/null || true
+    ufw allow 3000/tcp comment "Grafana" 2>/dev/null || true
+    ufw allow 51820/udp comment "WireGuard CloverMesh" 2>/dev/null || true
+
+    log "CloverFactory provisioning complete"
+    log "Web UI: https://$(hostname -I | awk '{print $1}'):8443"
+fi
+
 # --- Cleanup -----------------------------------------------------------------
 rm -f "${FIRST_BOOT_FLAG}"
 
