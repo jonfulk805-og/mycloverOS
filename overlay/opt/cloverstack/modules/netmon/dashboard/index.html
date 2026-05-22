@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetMon — MyClover.Tech</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🍀</text></svg>">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--surface:#161b22;--border:#30363d;
+  --text:#e6edf3;--text-muted:#8b949e;
+  --green:#2ea043;--green-light:#3fb950;--green-bg:rgba(46,160,67,.12);
+  --red:#f85149;--red-bg:rgba(248,81,73,.12);
+  --yellow:#d29922;--yellow-bg:rgba(210,153,34,.12);
+  --blue:#58a6ff;--blue-bg:rgba(88,166,255,.12);
+  --orange:#d18616;--orange-bg:rgba(209,134,22,.12);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Header */
+.header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header-left{display:flex;align-items:center;gap:12px}
+.logo-icon{width:32px;height:32px;filter:drop-shadow(0 0 6px rgba(46,160,67,.4))}
+.header h1{font-size:20px;font-weight:600;letter-spacing:.5px}
+.header h1 span{color:var(--green-light)}
+.header-right{display:flex;align-items:center;gap:16px}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.status-dot.ok{background:var(--green-light);box-shadow:0 0 6px var(--green)}
+.status-dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
+.zabbix-link{font-size:13px;color:var(--text-muted);padding:6px 12px;border:1px solid var(--border);border-radius:6px;transition:.2s}
+.zabbix-link:hover{border-color:var(--green);color:var(--green-light);text-decoration:none}
+.last-refresh{font-size:12px;color:var(--text-muted)}
+
+/* Stats bar */
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:20px 24px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;display:flex;align-items:center;gap:14px;transition:.2s}
+.stat-card:hover{border-color:var(--green);transform:translateY(-1px)}
+.stat-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px}
+.stat-icon.hosts{background:var(--green-bg)}
+.stat-icon.problems{background:var(--red-bg)}
+.stat-icon.warnings{background:var(--yellow-bg)}
+.stat-icon.uptime{background:var(--blue-bg)}
+.stat-value{font-size:28px;font-weight:700;line-height:1}
+.stat-label{font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+
+/* Main grid */
+.main{display:grid;grid-template-columns:1fr 380px;gap:20px;padding:0 24px 24px}
+@media(max-width:900px){.main{grid-template-columns:1fr}}
+
+/* Host grid */
+.section{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.section-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.section-title{font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.host-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:16px}
+.host-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;transition:.2s;cursor:default}
+.host-card:hover{border-color:var(--green)}
+.host-card.problem{border-left:3px solid var(--red)}
+.host-card.ok{border-left:3px solid var(--green)}
+.host-card.unknown{border-left:3px solid var(--text-muted)}
+.host-name{font-size:14px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.host-ip{font-size:12px;color:var(--text-muted);font-family:monospace}
+.host-status{font-size:11px;margin-top:8px;display:flex;align-items:center;gap:4px}
+.host-metrics{display:flex;gap:12px;margin-top:8px}
+.metric{font-size:11px;color:var(--text-muted)}
+.metric strong{color:var(--text);font-weight:600}
+
+/* Alert feed */
+.alert-feed{max-height:500px;overflow-y:auto}
+.alert-item{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;gap:10px;transition:.15s}
+.alert-item:hover{background:rgba(255,255,255,.02)}
+.alert-item:last-child{border-bottom:none}
+.alert-severity{width:6px;border-radius:3px;flex-shrink:0}
+.alert-severity.disaster{background:var(--red)}
+.alert-severity.high{background:var(--orange)}
+.alert-severity.average{background:var(--yellow)}
+.alert-severity.warning{background:var(--blue)}
+.alert-severity.info{background:var(--text-muted)}
+.alert-content{flex:1;min-width:0}
+.alert-title{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alert-host{font-size:11px;color:var(--text-muted);margin-top:2px}
+.alert-time{font-size:11px;color:var(--text-muted);flex-shrink:0;text-align:right}
+.alert-duration{font-size:10px;color:var(--text-muted)}
+
+/* Empty state */
+.empty-state{padding:40px 20px;text-align:center;color:var(--text-muted)}
+.empty-state .icon{font-size:36px;margin-bottom:12px}
+.empty-state p{font-size:14px}
+
+/* Connection status */
+.conn-banner{padding:10px 24px;text-align:center;font-size:13px;display:none}
+.conn-banner.error{display:block;background:var(--red-bg);color:var(--red);border-bottom:1px solid rgba(248,81,73,.3)}
+
+/* Loading */
+.loading{display:flex;align-items:center;justify-content:center;padding:40px}
+.spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <svg class="logo-icon" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <g transform="translate(50,50)">
+        <ellipse rx="18" ry="22" cx="0" cy="-18" fill="#2ea043" transform="rotate(0)"/>
+        <ellipse rx="18" ry="22" cx="0" cy="-18" fill="#3fb950" transform="rotate(90)"/>
+        <ellipse rx="18" ry="22" cx="0" cy="-18" fill="#2ea043" transform="rotate(180)"/>
+        <ellipse rx="18" ry="22" cx="0" cy="-18" fill="#3fb950" transform="rotate(270)"/>
+        <circle r="8" fill="#0d1117"/>
+        <line x1="0" y1="8" x2="6" y2="38" stroke="#2ea043" stroke-width="4" stroke-linecap="round"/>
+      </g>
+    </svg>
+    <h1><span>Net</span>Mon</h1>
+  </div>
+  <div class="header-right">
+    <span class="last-refresh" id="lastRefresh">—</span>
+    <span><span class="status-dot ok" id="connDot"></span><span id="connText" style="font-size:13px">Connecting…</span></span>
+    <a class="zabbix-link" id="zabbixLink" href="/zabbix/" target="_blank">Zabbix Admin ↗</a>
+  </div>
+</div>
+
+<div class="conn-banner" id="connBanner"></div>
+
+<div class="stats-bar" id="statsBar">
+  <div class="stat-card"><div class="stat-icon hosts">🖥</div><div><div class="stat-value" id="statHosts">—</div><div class="stat-label">Monitored Hosts</div></div></div>
+  <div class="stat-card"><div class="stat-icon problems">🔴</div><div><div class="stat-value" id="statProblems">—</div><div class="stat-label">Active Problems</div></div></div>
+  <div class="stat-card"><div class="stat-icon warnings">⚠️</div><div><div class="stat-value" id="statWarnings">—</div><div class="stat-label">Warnings</div></div></div>
+  <div class="stat-card"><div class="stat-icon uptime">📡</div><div><div class="stat-value" id="statUptime">—</div><div class="stat-label">Hosts Up</div></div></div>
+</div>
+
+<div class="main">
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">🖥 Host Status</span>
+      <span style="font-size:12px;color:var(--text-muted)" id="hostCount"></span>
+    </div>
+    <div class="host-grid" id="hostGrid">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">🚨 Active Alerts</span>
+      <span style="font-size:12px;color:var(--text-muted)" id="alertCount"></span>
+    </div>
+    <div class="alert-feed" id="alertFeed">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const ZABBIX_API = '/zabbix-api/api_jsonrpc.php';
+let authToken = null;
+const REFRESH_MS = 15000;
+
+// --- Zabbix JSON-RPC helper ---
+async function zabbixCall(method, params = {}) {
+  const body = { jsonrpc: '2.0', method, params, id: 1 };
+  if (authToken) body.auth = authToken;
+  const res = await fetch(ZABBIX_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.data || json.error.message);
+  return json.result;
+}
+
+// --- Auth ---
+async function login() {
+  // Try default creds — user should change in production
+  authToken = await zabbixCall('user.login', { username: 'Admin', password: 'zabbix' });
+}
+
+// --- Fetch data ---
+async function fetchHosts() {
+  return await zabbixCall('host.get', {
+    output: ['hostid', 'host', 'name', 'status', 'available', 'maintenance_status'],
+    selectInterfaces: ['ip', 'type'],
+    selectTags: ['tag', 'value'],
+    sortfield: 'name',
+    monitored_hosts: true
+  });
+}
+
+async function fetchProblems() {
+  return await zabbixCall('problem.get', {
+    output: ['eventid', 'objectid', 'name', 'severity', 'clock', 'r_clock'],
+    selectHosts: ['hostid', 'name'],
+    selectTags: ['tag', 'value'],
+    sortfield: ['severity', 'clock'],
+    sortorder: ['DESC', 'DESC'],
+    recent: true,
+    limit: 50
+  });
+}
+
+// --- Render ---
+function renderStats(hosts, problems) {
+  const total = hosts.length;
+  const up = hosts.filter(h => h.available === '1' || h.available === 1).length;
+  const probCount = problems.length;
+  const warnings = problems.filter(p => parseInt(p.severity) <= 2).length;
+
+  document.getElementById('statHosts').textContent = total;
+  document.getElementById('statProblems').textContent = probCount;
+  document.getElementById('statWarnings').textContent = warnings;
+  document.getElementById('statUptime').textContent = total > 0 ? `${up}/${total}` : '—';
+}
+
+function renderHosts(hosts, problems) {
+  const grid = document.getElementById('hostGrid');
+  if (!hosts.length) {
+    grid.innerHTML = `<div class="empty-state"><div class="icon">🖥</div><p>No monitored hosts yet.<br>Add hosts in <a href="/zabbix/" target="_blank">Zabbix Admin</a></p></div>`;
+    document.getElementById('hostCount').textContent = '';
+    return;
+  }
+
+  const problemHostIds = new Set(problems.flatMap(p => (p.hosts || []).map(h => h.hostid)));
+
+  grid.innerHTML = hosts.map(h => {
+    const ip = (h.interfaces && h.interfaces[0]) ? h.interfaces[0].ip : '—';
+    const hasProblem = problemHostIds.has(h.hostid);
+    const avail = h.available;
+    let cls = 'unknown', statusText = 'Unknown', dotCls = '';
+    if (avail === '1' || avail === 1) { cls = hasProblem ? 'problem' : 'ok'; statusText = hasProblem ? 'Problem' : 'OK'; dotCls = hasProblem ? 'err' : 'ok'; }
+    else if (avail === '2' || avail === 2) { cls = 'problem'; statusText = 'Unreachable'; dotCls = 'err'; }
+    else { statusText = 'Unknown'; }
+
+    return `<div class="host-card ${cls}">
+      <div class="host-name"><span class="status-dot ${dotCls}"></span>${escHtml(h.name)}</div>
+      <div class="host-ip">${escHtml(ip)}</div>
+      <div class="host-status">${statusText}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('hostCount').textContent = `${hosts.length} hosts`;
+}
+
+function renderAlerts(problems) {
+  const feed = document.getElementById('alertFeed');
+  if (!problems.length) {
+    feed.innerHTML = `<div class="empty-state"><div class="icon">✅</div><p>No active problems — all clear!</p></div>`;
+    document.getElementById('alertCount').textContent = '';
+    return;
+  }
+
+  const sevMap = { '0': 'info', '1': 'info', '2': 'warning', '3': 'average', '4': 'high', '5': 'disaster' };
+  const sevLabel = { '0': 'Not classified', '1': 'Information', '2': 'Warning', '3': 'Average', '4': 'High', '5': 'Disaster' };
+
+  feed.innerHTML = problems.map(p => {
+    const sev = sevMap[p.severity] || 'info';
+    const hostName = (p.hosts && p.hosts[0]) ? p.hosts[0].name : '—';
+    const time = new Date(parseInt(p.clock) * 1000);
+    const ago = timeSince(time);
+
+    return `<div class="alert-item">
+      <div class="alert-severity ${sev}" title="${sevLabel[p.severity] || ''}"></div>
+      <div class="alert-content">
+        <div class="alert-title" title="${escHtml(p.name)}">${escHtml(p.name)}</div>
+        <div class="alert-host">${escHtml(hostName)}</div>
+      </div>
+      <div class="alert-time">${ago}<div class="alert-duration">${sevLabel[p.severity] || ''}</div></div>
+    </div>`;
+  }).join('');
+  document.getElementById('alertCount').textContent = `${problems.length} active`;
+}
+
+// --- Helpers ---
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function timeSince(date) {
+  const s = Math.floor((Date.now() - date) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+function setConnected(ok, msg) {
+  const dot = document.getElementById('connDot');
+  const txt = document.getElementById('connText');
+  const banner = document.getElementById('connBanner');
+  dot.className = 'status-dot ' + (ok ? 'ok' : 'err');
+  txt.textContent = ok ? 'Connected' : 'Disconnected';
+  if (!ok) { banner.className = 'conn-banner error'; banner.textContent = msg || 'Cannot reach Zabbix API'; }
+  else { banner.className = 'conn-banner'; banner.textContent = ''; }
+}
+
+// --- Main loop ---
+async function refresh() {
+  try {
+    if (!authToken) await login();
+    const [hosts, problems] = await Promise.all([fetchHosts(), fetchProblems()]);
+    renderStats(hosts, problems);
+    renderHosts(hosts, problems);
+    renderAlerts(problems);
+    setConnected(true);
+    document.getElementById('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    console.error('NetMon refresh error:', e);
+    if (e.message && (e.message.includes('Session') || e.message.includes('login') || e.message.includes('Not authorised'))) {
+      authToken = null;
+      try { await login(); await refresh(); return; } catch (e2) { setConnected(false, e2.message); }
+    } else {
+      setConnected(false, e.message);
+    }
+  }
+}
+
+// Detect Zabbix URL and set admin link
+(function() {
+  const port = location.port;
+  // Direct access on :8082 → Zabbix at :8081
+  // Via Traefik → Zabbix at /zabbix/
+  const zbxUrl = location.origin.replace(':8082', ':8081');
+  document.getElementById('zabbixLink').href = zbxUrl;
+})();
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
