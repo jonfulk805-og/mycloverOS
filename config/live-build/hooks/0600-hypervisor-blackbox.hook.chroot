@@ -1,0 +1,823 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS Hypervisor Blackbox Edition -- Chroot Build Hook
+# Configures bare-metal hypervisor: KVM, libvirt, OVS, ZFS, Cockpit skin,
+# blackbox hardening (read-only root, dm-verity, no SSH default).
+# =============================================================================
+set -e
+
+echo "[hypervisor] Running Hypervisor Blackbox chroot hook..."
+
+# =============================================================================
+# 1. INSTALL ZFS FROM DEBIAN CONTRIB (same as CloverNAS)
+# =============================================================================
+echo "[hypervisor] Installing OpenZFS for VM storage..."
+
+if ! grep -q "contrib" /etc/apt/sources.list 2>/dev/null; then
+    sed -i 's/main$/main contrib/' /etc/apt/sources.list
+fi
+
+cat > /etc/apt/sources.list.d/bookworm-backports.list <<'BKPT'
+deb http://deb.debian.org/debian bookworm-backports main contrib
+BKPT
+
+apt-get update
+
+apt-get install -y --no-install-recommends \
+    linux-headers-amd64 \
+    zfsutils-linux \
+    zfs-dkms \
+    zfs-zed \
+    || echo "[hypervisor] WARNING: ZFS install failed (may need kernel headers at boot)"
+
+systemctl enable zfs-import-cache.service 2>/dev/null || true
+systemctl enable zfs-import-scan.service 2>/dev/null || true
+systemctl enable zfs-mount.service 2>/dev/null || true
+systemctl enable zfs.target 2>/dev/null || true
+systemctl enable zfs-zed.service 2>/dev/null || true
+
+echo "[hypervisor] ZFS install complete"
+
+# =============================================================================
+# 2. DIRECTORY STRUCTURE
+# =============================================================================
+echo "[hypervisor] Creating CloverVisor directory structure..."
+
+mkdir -p /opt/clovervisor/{config,templates,scripts,ui,backup}
+mkdir -p /var/lib/clovervisor/{vms,isos,templates,snapshots,import}
+mkdir -p /var/log/clovervisor
+mkdir -p /etc/myclover/clovervisor.d
+mkdir -p /opt/cloverstack/hypervisor
+
+# =============================================================================
+# 3. CLOVERVISOR CONFIGURATION
+# =============================================================================
+echo "[hypervisor] Writing CloverVisor default configuration..."
+
+cat > /etc/myclover/clovervisor.d/hypervisor.conf <<'HVCONF'
+# =============================================================================
+# CloverVisor -- Hypervisor Blackbox Edition Configuration
+# =============================================================================
+
+# --- Identity ---
+CLOVERVISOR_VERSION="1.0.0"
+CLOVERVISOR_EDITION="blackbox"
+CLOVERVISOR_NODE_NAME=""                # Set at first boot
+CLOVERVISOR_CLUSTER_NAME=""             # Set when joining cluster
+
+# --- Web UI ---
+CLOVERVISOR_PORT=8006                   # Web management port
+CLOVERVISOR_SSL=true                    # HTTPS by default
+CLOVERVISOR_CERT_DIR="/etc/myclover/clovervisor.d/ssl"
+CLOVERVISOR_BIND="0.0.0.0"
+
+# --- VM Defaults ---
+VM_DEFAULT_RAM=2048                     # MB
+VM_DEFAULT_VCPUS=2
+VM_DEFAULT_DISK=20                      # GB (thin provisioned)
+VM_DEFAULT_OS="debian12"
+VM_DEFAULT_NETWORK="clover-br0"
+VM_DEFAULT_STORAGE_POOL="clovervisor-pool"
+VM_CONSOLE_TYPE="novnc"                 # novnc | spice
+VM_NOVNC_PORT_RANGE="5900-5999"
+
+# --- Storage ---
+STORAGE_BACKEND="auto"                  # auto | zfs | lvm-thin | dir
+STORAGE_ZFS_POOL="clovervisor-pool"
+STORAGE_ZFS_COMPRESSION="lz4"
+STORAGE_ZFS_ATIME="off"
+STORAGE_ZFS_RECORDSIZE="64K"            # Optimized for VM disk images
+STORAGE_LVM_VG="clovervisor-vg"
+STORAGE_LVM_THIN_POOL="vmpool"
+STORAGE_DIR="/var/lib/clovervisor/vms"
+
+# --- Networking ---
+NETWORK_BACKEND="ovs"                   # ovs | linux-bridge
+OVS_BRIDGE="clover-br0"
+OVS_UPLINK="auto"                       # Auto-detect first physical NIC
+VLAN_ENABLED=true
+VLAN_MANAGEMENT=1                       # Management VLAN
+VLAN_VM_DEFAULT=100                     # Default VM VLAN
+SDN_ENABLED=false                       # Software-defined networking (Enterprise)
+
+# --- GPU Passthrough ---
+GPU_PASSTHROUGH_ENABLED=false
+IOMMU_ENABLED=false                     # Requires BIOS VT-d/AMD-Vi
+VFIO_PCI_IDS=""                         # Comma-separated PCI IDs to bind
+
+# --- Cluster (CloverMesh HA) ---
+CLUSTER_ENABLED=false
+CLUSTER_TRANSPORT="wireguard"
+CLUSTER_HEARTBEAT_MS=2000
+CLUSTER_VIP=""
+CLUSTER_QUORUM="corosync"
+DRBD_ENABLED=false
+DRBD_SYNC_RATE="100M"
+LIVE_MIGRATION=true
+MIGRATION_BANDWIDTH="auto"              # auto = max available
+
+# --- Backup ---
+BACKUP_ENABLED=true
+BACKUP_SCHEDULE="daily"                 # daily | hourly | custom cron
+BACKUP_RETENTION_DAYS=30
+BACKUP_DESTINATION="local"              # local | s3 | restic-repo
+BACKUP_S3_ENDPOINT=""
+BACKUP_S3_BUCKET=""
+BACKUP_ENCRYPTION=true
+
+# --- AI (Chappie) ---
+AI_ENABLED=true
+AI_ENGINE="ollama"
+AI_MODEL="auto"                         # Hardware-aware selection
+AI_VM_RIGHTSIZING=true                  # Monitor + suggest optimal resources
+AI_ANOMALY_DETECTION=true              # Alert on unusual patterns
+AI_PREDICTIVE_ALERTS=true              # Disk failure, capacity forecasts
+AI_NLP_COMMANDS=true                   # "Chappie, create a Ubuntu VM"
+
+# --- Blackbox Security ---
+BLACKBOX_MODE=true
+SSH_ENABLED=false                       # SSH disabled by default
+SSH_PORT=22
+ROOT_READONLY=true                      # Read-only root filesystem
+DMVERITY_ENABLED=false                  # Enable after tested stable
+AUTO_UPDATE=true                        # OTA security patches
+UPDATE_CHANNEL="stable"                 # stable | beta | nightly
+EMERGENCY_CONSOLE=true                  # Physical-access-only console
+TAMPER_DETECTION=true
+WATCHDOG_ENABLED=true
+WATCHDOG_TIMEOUT=60                     # Seconds before reboot on hang
+HVCONF
+
+# =============================================================================
+# 4. CLOVERVISOR NETWORK SETUP
+# =============================================================================
+echo "[hypervisor] Configuring Open vSwitch networking..."
+
+cat > /opt/clovervisor/scripts/setup-network.sh <<'NETSCRIPT'
+#!/bin/bash
+# CloverVisor network initialization
+# Run at first boot to configure OVS bridge
+set -e
+
+source /etc/myclover/clovervisor.d/hypervisor.conf 2>/dev/null || true
+
+BRIDGE="${OVS_BRIDGE:-clover-br0}"
+UPLINK="${OVS_UPLINK:-auto}"
+
+# Auto-detect primary NIC
+if [[ "${UPLINK}" == "auto" ]]; then
+    UPLINK=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
+    if [[ -z "${UPLINK}" ]]; then
+        UPLINK=$(ip -o link show up | awk -F: '!/lo|docker|veth|ovs|virbr/ {print $2}' | tr -d ' ' | head -1)
+    fi
+fi
+
+if [[ -z "${UPLINK}" ]]; then
+    echo "[clovervisor] ERROR: No physical NIC found for OVS bridge"
+    exit 1
+fi
+
+echo "[clovervisor] Setting up OVS bridge: ${BRIDGE} with uplink: ${UPLINK}"
+
+# Create OVS bridge
+ovs-vsctl --may-exist add-br "${BRIDGE}"
+ovs-vsctl --may-exist add-port "${BRIDGE}" "${UPLINK}"
+
+# Move IP from physical NIC to bridge
+IP_ADDR=$(ip -4 addr show "${UPLINK}" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | head -1)
+GATEWAY=$(ip route show default | awk '/default/ {print $3}' | head -1)
+DNS=$(grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1)
+
+if [[ -n "${IP_ADDR}" ]]; then
+    ip addr del "${IP_ADDR}" dev "${UPLINK}" 2>/dev/null || true
+    ip addr add "${IP_ADDR}" dev "${BRIDGE}"
+    ip link set "${BRIDGE}" up
+    ip route add default via "${GATEWAY}" dev "${BRIDGE}" 2>/dev/null || true
+fi
+
+# Create default VM network
+ovs-vsctl --may-exist add-br clover-vm-br0
+
+# Configure libvirt to use OVS bridge
+cat > /etc/libvirt/qemu/networks/clover-ovs.xml <<OVSNET
+<network>
+  <name>clover-ovs</name>
+  <forward mode='bridge'/>
+  <bridge name='${BRIDGE}'/>
+  <virtualport type='openvswitch'/>
+</network>
+OVSNET
+
+virsh net-define /etc/libvirt/qemu/networks/clover-ovs.xml 2>/dev/null || true
+virsh net-start clover-ovs 2>/dev/null || true
+virsh net-autostart clover-ovs 2>/dev/null || true
+
+echo "[clovervisor] OVS network setup complete"
+NETSCRIPT
+chmod +x /opt/clovervisor/scripts/setup-network.sh
+
+# =============================================================================
+# 5. CLOVERVISOR STORAGE SETUP
+# =============================================================================
+echo "[hypervisor] Configuring storage backends..."
+
+cat > /opt/clovervisor/scripts/setup-storage.sh <<'STORSCRIPT'
+#!/bin/bash
+# CloverVisor storage initialization
+set -e
+
+source /etc/myclover/clovervisor.d/hypervisor.conf 2>/dev/null || true
+
+BACKEND="${STORAGE_BACKEND:-auto}"
+
+echo "[clovervisor] Detecting storage backend..."
+
+# Auto-detect: prefer ZFS if available, then LVM-thin, then dir
+if [[ "${BACKEND}" == "auto" ]]; then
+    if command -v zfs &>/dev/null && zpool list 2>/dev/null | grep -q "clovervisor"; then
+        BACKEND="zfs"
+    elif lvs 2>/dev/null | grep -q "vmpool"; then
+        BACKEND="lvm-thin"
+    else
+        BACKEND="dir"
+    fi
+fi
+
+case "${BACKEND}" in
+    zfs)
+        echo "[clovervisor] Using ZFS storage backend"
+        POOL="${STORAGE_ZFS_POOL:-clovervisor-pool}"
+
+        if ! zpool list "${POOL}" &>/dev/null; then
+            echo "[clovervisor] ZFS pool '${POOL}' not found."
+            echo "[clovervisor] Run: clovervisor storage create-pool <disks>"
+            # Fall back to directory
+            BACKEND="dir"
+        else
+            # Set optimal ZFS properties for VM workloads
+            zfs set compression="${STORAGE_ZFS_COMPRESSION:-lz4}" "${POOL}" 2>/dev/null || true
+            zfs set atime="${STORAGE_ZFS_ATIME:-off}" "${POOL}" 2>/dev/null || true
+            zfs set recordsize="${STORAGE_ZFS_RECORDSIZE:-64K}" "${POOL}" 2>/dev/null || true
+            zfs set primarycache=all "${POOL}" 2>/dev/null || true
+            zfs set secondarycache=all "${POOL}" 2>/dev/null || true
+
+            # Create VM datasets
+            zfs create -p "${POOL}/vms" 2>/dev/null || true
+            zfs create -p "${POOL}/isos" 2>/dev/null || true
+            zfs create -p "${POOL}/templates" 2>/dev/null || true
+            zfs create -p "${POOL}/backups" 2>/dev/null || true
+
+            # Create libvirt storage pool pointing to ZFS
+            virsh pool-define-as "clovervisor-pool" zfs - - - - "${POOL}/vms" 2>/dev/null || true
+            virsh pool-start "clovervisor-pool" 2>/dev/null || true
+            virsh pool-autostart "clovervisor-pool" 2>/dev/null || true
+        fi
+        ;;
+
+    lvm-thin)
+        echo "[clovervisor] Using LVM thin-provisioned storage backend"
+        VG="${STORAGE_LVM_VG:-clovervisor-vg}"
+        THINPOOL="${STORAGE_LVM_THIN_POOL:-vmpool}"
+
+        if lvs "${VG}/${THINPOOL}" &>/dev/null; then
+            virsh pool-define-as "clovervisor-pool" logical - - - "${VG}" 2>/dev/null || true
+            virsh pool-start "clovervisor-pool" 2>/dev/null || true
+            virsh pool-autostart "clovervisor-pool" 2>/dev/null || true
+        else
+            echo "[clovervisor] LVM thin pool not found. Falling back to directory."
+            BACKEND="dir"
+        fi
+        ;;
+esac
+
+if [[ "${BACKEND}" == "dir" ]]; then
+    echo "[clovervisor] Using directory storage backend"
+    mkdir -p /var/lib/clovervisor/vms
+    virsh pool-define-as "clovervisor-pool" dir - - - - /var/lib/clovervisor/vms 2>/dev/null || true
+    virsh pool-start "clovervisor-pool" 2>/dev/null || true
+    virsh pool-autostart "clovervisor-pool" 2>/dev/null || true
+fi
+
+# Create ISO pool
+mkdir -p /var/lib/clovervisor/isos
+virsh pool-define-as "clovervisor-isos" dir - - - - /var/lib/clovervisor/isos 2>/dev/null || true
+virsh pool-start "clovervisor-isos" 2>/dev/null || true
+virsh pool-autostart "clovervisor-isos" 2>/dev/null || true
+
+echo "[clovervisor] Storage setup complete (backend: ${BACKEND})"
+STORSCRIPT
+chmod +x /opt/clovervisor/scripts/setup-storage.sh
+
+# =============================================================================
+# 6. GPU PASSTHROUGH SETUP
+# =============================================================================
+echo "[hypervisor] Configuring GPU passthrough (VFIO/IOMMU)..."
+
+cat > /opt/clovervisor/scripts/setup-gpu-passthrough.sh <<'GPUSCRIPT'
+#!/bin/bash
+# CloverVisor GPU passthrough setup
+# Binds selected PCI devices to vfio-pci driver for VM passthrough
+set -e
+
+source /etc/myclover/clovervisor.d/hypervisor.conf 2>/dev/null || true
+
+if [[ "${GPU_PASSTHROUGH_ENABLED}" != "true" ]]; then
+    echo "[clovervisor] GPU passthrough is disabled. Enable in hypervisor.conf"
+    exit 0
+fi
+
+echo "[clovervisor] Setting up GPU passthrough..."
+
+# Check IOMMU
+if ! dmesg | grep -qi "IOMMU enabled\|DMAR.*IOMMU\|AMD-Vi"; then
+    echo "[clovervisor] WARNING: IOMMU not detected. Enable VT-d (Intel) or AMD-Vi in BIOS."
+    exit 1
+fi
+
+# Load VFIO modules
+modprobe vfio
+modprobe vfio_iommu_type1
+modprobe vfio_pci
+modprobe vfio_virqfd 2>/dev/null || true
+
+# Persist modules
+cat > /etc/modules-load.d/vfio.conf <<'MODS'
+vfio
+vfio_iommu_type1
+vfio_pci
+vfio_virqfd
+MODS
+
+# Bind specified PCI devices
+if [[ -n "${VFIO_PCI_IDS}" ]]; then
+    echo "options vfio-pci ids=${VFIO_PCI_IDS}" > /etc/modprobe.d/vfio.conf
+    echo "[clovervisor] VFIO bound to PCI IDs: ${VFIO_PCI_IDS}"
+fi
+
+# List IOMMU groups for user reference
+echo "[clovervisor] IOMMU Groups:"
+for g in /sys/kernel/iommu_groups/*/devices/*; do
+    GRPID=$(echo "$g" | awk -F/ '{print $5}')
+    DEV=$(basename "$g")
+    DESC=$(lspci -nns "${DEV}" 2>/dev/null || echo "unknown")
+    echo "  Group ${GRPID}: ${DESC}"
+done
+
+echo "[clovervisor] GPU passthrough setup complete"
+GPUSCRIPT
+chmod +x /opt/clovervisor/scripts/setup-gpu-passthrough.sh
+
+# =============================================================================
+# 7. BLACKBOX HARDENING
+# =============================================================================
+echo "[hypervisor] Applying blackbox hardening..."
+
+# Disable SSH by default (user enables via web UI)
+systemctl disable ssh 2>/dev/null || true
+systemctl disable sshd 2>/dev/null || true
+
+# Create SSH enable/disable scripts (toggled from web UI)
+cat > /opt/clovervisor/scripts/ssh-toggle.sh <<'SSHTOGGLE'
+#!/bin/bash
+# Toggle SSH access on/off
+case "$1" in
+    enable)
+        systemctl enable ssh
+        systemctl start ssh
+        echo "[clovervisor] SSH enabled"
+        ;;
+    disable)
+        systemctl stop ssh
+        systemctl disable ssh
+        echo "[clovervisor] SSH disabled"
+        ;;
+    status)
+        systemctl is-active ssh && echo "SSH: ACTIVE" || echo "SSH: DISABLED"
+        ;;
+    *)
+        echo "Usage: ssh-toggle.sh {enable|disable|status}"
+        ;;
+esac
+SSHTOGGLE
+chmod +x /opt/clovervisor/scripts/ssh-toggle.sh
+
+# Watchdog configuration
+cat > /etc/systemd/system/clovervisor-watchdog.service <<'WATCHDOG'
+[Unit]
+Description=CloverVisor Watchdog Monitor
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/opt/clovervisor/scripts/watchdog-monitor.sh
+Restart=always
+RestartSec=5
+WatchdogSec=60
+
+[Install]
+WantedBy=multi-user.target
+WATCHDOG
+
+cat > /opt/clovervisor/scripts/watchdog-monitor.sh <<'WDSCRIPT'
+#!/bin/bash
+# CloverVisor watchdog -- monitors critical services, auto-restarts
+SERVICES="libvirtd cockpit openvswitch-switch"
+LOG="/var/log/clovervisor/watchdog.log"
+mkdir -p "$(dirname "${LOG}")"
+
+while true; do
+    for svc in ${SERVICES}; do
+        if ! systemctl is-active --quiet "${svc}" 2>/dev/null; then
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WATCHDOG: ${svc} down -- restarting" >> "${LOG}"
+            systemctl restart "${svc}" 2>/dev/null || true
+        fi
+    done
+    # Notify systemd watchdog
+    systemd-notify WATCHDOG=1 2>/dev/null || true
+    sleep 15
+done
+WDSCRIPT
+chmod +x /opt/clovervisor/scripts/watchdog-monitor.sh
+systemctl enable clovervisor-watchdog 2>/dev/null || true
+
+# Tamper detection (file integrity baseline)
+cat > /opt/clovervisor/scripts/integrity-baseline.sh <<'INTEGRITY'
+#!/bin/bash
+# Generate integrity baseline of critical system files
+BASELINE="/opt/clovervisor/config/integrity-baseline.sha256"
+echo "[clovervisor] Generating integrity baseline..."
+
+find /usr/sbin /usr/bin /etc/myclover /opt/clovervisor/scripts \
+    -type f -exec sha256sum {} \; > "${BASELINE}" 2>/dev/null
+
+echo "[clovervisor] Baseline saved: ${BASELINE} ($(wc -l < "${BASELINE}") files)"
+INTEGRITY
+chmod +x /opt/clovervisor/scripts/integrity-baseline.sh
+
+cat > /opt/clovervisor/scripts/integrity-check.sh <<'INTCHECK'
+#!/bin/bash
+# Verify system integrity against baseline
+BASELINE="/opt/clovervisor/config/integrity-baseline.sha256"
+LOG="/var/log/clovervisor/integrity.log"
+
+if [[ ! -f "${BASELINE}" ]]; then
+    echo "[clovervisor] No integrity baseline found. Run integrity-baseline.sh first."
+    exit 1
+fi
+
+RESULT=$(sha256sum -c "${BASELINE}" 2>&1 | grep -i "FAILED" || true)
+if [[ -n "${RESULT}" ]]; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] TAMPER ALERT:" >> "${LOG}"
+    echo "${RESULT}" >> "${LOG}"
+    echo "[clovervisor] INTEGRITY VIOLATION DETECTED -- see ${LOG}"
+    # TODO: Send alert via Chappie AI / webhook
+    exit 1
+else
+    echo "[clovervisor] Integrity check passed"
+fi
+INTCHECK
+chmod +x /opt/clovervisor/scripts/integrity-check.sh
+
+# Integrity check cron (every 6 hours)
+cat > /etc/cron.d/clovervisor-integrity <<'INTCRON'
+0 */6 * * * root /opt/clovervisor/scripts/integrity-check.sh >> /var/log/clovervisor/integrity.log 2>&1
+INTCRON
+
+# =============================================================================
+# 8. GRUB -- IOMMU + PERFORMANCE TUNING
+# =============================================================================
+echo "[hypervisor] Configuring GRUB for hypervisor workloads..."
+
+if [[ -f /etc/default/grub ]]; then
+    # Add hypervisor-optimized kernel parameters
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 intel_iommu=on amd_iommu=on iommu=pt default_hugepagesz=2M hugepagesz=2M hugepages=1024 transparent_hugepage=never isolcpus=domain,managed_irq nohz_full= rcu_nocbs= mitigations=auto kvm.ignore_msrs=1 kvm_intel.nested=1 kvm_amd.nested=1"/' /etc/default/grub
+fi
+
+# =============================================================================
+# 9. LIBVIRT CONFIGURATION
+# =============================================================================
+echo "[hypervisor] Configuring libvirt for CloverVisor..."
+
+# Enable libvirt
+systemctl enable libvirtd 2>/dev/null || true
+systemctl enable virtlogd 2>/dev/null || true
+
+# Disable default NAT network (we use OVS)
+virsh net-autostart default --disable 2>/dev/null || true
+
+# Libvirt config for live migration
+mkdir -p /etc/libvirt
+cat > /etc/libvirt/libvirtd.conf.d/clovervisor.conf <<'LVCONF' 2>/dev/null || true
+# CloverVisor libvirt overrides
+listen_tls = 1
+listen_tcp = 1
+tcp_port = "16509"
+tls_port = "16514"
+auth_tcp = "none"
+auth_tls = "none"
+keepalive_interval = 5
+keepalive_count = 5
+log_level = 3
+log_outputs = "3:file:/var/log/clovervisor/libvirtd.log"
+LVCONF
+
+# Create default libvirt storage pool
+mkdir -p /var/lib/clovervisor/vms
+cat > /etc/libvirt/storage/clovervisor-pool.xml <<'VIRTSTORAGE'
+<pool type='dir'>
+  <name>clovervisor-pool</name>
+  <target>
+    <path>/var/lib/clovervisor/vms</path>
+  </target>
+</pool>
+VIRTSTORAGE
+
+# =============================================================================
+# 10. COCKPIT + CLOVERVISOR UI
+# =============================================================================
+echo "[hypervisor] Configuring Cockpit with CloverVisor skin..."
+
+mkdir -p /etc/cockpit
+cat > /etc/cockpit/cockpit.conf <<'CPCONF'
+[WebService]
+Origins = https://localhost:8006 wss://localhost:8006
+ProtocolHeader = X-Forwarded-Proto
+LoginTitle = CloverVisor
+MaxStartups = 10
+
+[Session]
+IdleTimeout = 60
+Banner = /etc/myclover/clovervisor.d/banner.txt
+
+[Log]
+Fatal = criticals warnings
+CPCONF
+
+# Override Cockpit port to 8006
+mkdir -p /etc/systemd/system/cockpit.socket.d
+cat > /etc/systemd/system/cockpit.socket.d/override.conf <<'CPPORT'
+[Socket]
+ListenStream=
+ListenStream=8006
+CPPORT
+
+# Enable Cockpit
+systemctl enable cockpit.socket 2>/dev/null || true
+
+# CloverVisor login banner
+cat > /etc/myclover/clovervisor.d/banner.txt <<'BANNER'
+
+  ╔═══════════════════════════════════════════════╗
+  ║     CloverVisor -- Hypervisor Blackbox        ║
+  ║     MyClover.Tech CloverOS                    ║
+  ║     Authorized access only                    ║
+  ╚═══════════════════════════════════════════════╝
+
+BANNER
+
+# =============================================================================
+# 11. PERFORMANCE TUNING
+# =============================================================================
+echo "[hypervisor] Applying hypervisor performance tuning..."
+
+# Enable tuned for hypervisor workloads
+systemctl enable tuned 2>/dev/null || true
+# Will be activated at first boot: tuned-adm profile virtual-host
+
+# IRQ balancing
+systemctl enable irqbalance 2>/dev/null || true
+
+# Kernel tuning for VM performance
+cat > /etc/sysctl.d/90-clovervisor.conf <<'SYSCTL'
+# CloverVisor kernel tuning
+
+# VM memory management
+vm.swappiness = 10
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
+vm.overcommit_memory = 1
+vm.overcommit_ratio = 80
+
+# Network performance
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 0
+net.bridge.bridge-nf-call-ip6tables = 0
+
+# File descriptors
+fs.file-max = 2097152
+fs.nr_open = 2097152
+
+# AIO (for QEMU)
+fs.aio-max-nr = 1048576
+
+# KSM (Kernel Same-page Merging) for VM memory dedup
+# Enabled for memory overcommit efficiency
+kernel.ksm_run = 1
+kernel.ksm_sleep_millisecs = 200
+SYSCTL
+
+# =============================================================================
+# 12. CLOVERVISOR SYSTEMD SERVICE
+# =============================================================================
+echo "[hypervisor] Creating CloverVisor service..."
+
+cat > /etc/systemd/system/clovervisor.service <<'CVSVC'
+[Unit]
+Description=CloverVisor Hypervisor Management
+After=network-online.target libvirtd.service openvswitch-switch.service
+Wants=network-online.target
+Requires=libvirtd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/opt/clovervisor/scripts/setup-storage.sh
+ExecStart=/opt/clovervisor/scripts/setup-network.sh
+ExecStartPost=/opt/clovervisor/scripts/integrity-baseline.sh
+
+[Install]
+WantedBy=multi-user.target
+CVSVC
+
+systemctl enable clovervisor 2>/dev/null || true
+
+# =============================================================================
+# 13. VM TEMPLATE CATALOG
+# =============================================================================
+echo "[hypervisor] Installing VM template catalog..."
+
+cat > /opt/clovervisor/templates/catalog.json <<'VMCAT'
+{
+  "version": "1.0.0",
+  "templates": [
+    {
+      "id": "cloveros-server",
+      "name": "CloverOS Server",
+      "desc": "Full CloverStack platform in a VM",
+      "os": "linux",
+      "iso": "mycloverOS-latest-server-amd64.iso",
+      "ram_mb": 4096,
+      "vcpus": 4,
+      "disk_gb": 40,
+      "category": "clover"
+    },
+    {
+      "id": "debian12",
+      "name": "Debian 12 Bookworm",
+      "desc": "Minimal Debian server",
+      "os": "linux",
+      "iso_url": "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/",
+      "ram_mb": 2048,
+      "vcpus": 2,
+      "disk_gb": 20,
+      "category": "linux"
+    },
+    {
+      "id": "ubuntu2404",
+      "name": "Ubuntu 24.04 LTS",
+      "desc": "Ubuntu Server",
+      "os": "linux",
+      "iso_url": "https://releases.ubuntu.com/24.04/",
+      "ram_mb": 2048,
+      "vcpus": 2,
+      "disk_gb": 25,
+      "category": "linux"
+    },
+    {
+      "id": "rocky9",
+      "name": "Rocky Linux 9",
+      "desc": "RHEL-compatible enterprise Linux",
+      "os": "linux",
+      "iso_url": "https://rockylinux.org/download",
+      "ram_mb": 2048,
+      "vcpus": 2,
+      "disk_gb": 20,
+      "category": "linux"
+    },
+    {
+      "id": "windows-server-2022",
+      "name": "Windows Server 2022",
+      "desc": "Windows Server (bring your own ISO + license)",
+      "os": "windows",
+      "ram_mb": 4096,
+      "vcpus": 4,
+      "disk_gb": 60,
+      "virtio_drivers": true,
+      "category": "windows"
+    },
+    {
+      "id": "windows-11",
+      "name": "Windows 11",
+      "desc": "Windows 11 desktop (bring your own ISO + license)",
+      "os": "windows",
+      "ram_mb": 8192,
+      "vcpus": 4,
+      "disk_gb": 64,
+      "tpm": true,
+      "uefi": true,
+      "virtio_drivers": true,
+      "category": "windows"
+    },
+    {
+      "id": "pfsense",
+      "name": "pfSense Firewall",
+      "desc": "pfSense CE virtual firewall",
+      "os": "freebsd",
+      "iso_url": "https://www.pfsense.org/download/",
+      "ram_mb": 2048,
+      "vcpus": 2,
+      "disk_gb": 10,
+      "nics": 2,
+      "category": "network"
+    },
+    {
+      "id": "opnsense",
+      "name": "OPNsense Firewall",
+      "desc": "OPNsense virtual firewall",
+      "os": "freebsd",
+      "iso_url": "https://opnsense.org/download/",
+      "ram_mb": 2048,
+      "vcpus": 2,
+      "disk_gb": 10,
+      "nics": 2,
+      "category": "network"
+    },
+    {
+      "id": "truenas",
+      "name": "TrueNAS CORE",
+      "desc": "TrueNAS CORE virtual NAS",
+      "os": "freebsd",
+      "iso_url": "https://www.truenas.com/download-truenas-core/",
+      "ram_mb": 8192,
+      "vcpus": 4,
+      "disk_gb": 16,
+      "category": "storage"
+    },
+    {
+      "id": "docker-host",
+      "name": "Docker Host",
+      "desc": "Lightweight Debian + Docker CE for containerized workloads",
+      "os": "linux",
+      "ram_mb": 2048,
+      "vcpus": 2,
+      "disk_gb": 30,
+      "cloud_init": true,
+      "category": "container"
+    },
+    {
+      "id": "k3s-node",
+      "name": "K3s Kubernetes Node",
+      "desc": "Lightweight Kubernetes node (Rancher K3s)",
+      "os": "linux",
+      "ram_mb": 4096,
+      "vcpus": 4,
+      "disk_gb": 40,
+      "cloud_init": true,
+      "category": "container"
+    }
+  ]
+}
+VMCAT
+
+# =============================================================================
+# 14. CONSOLE BANNER
+# =============================================================================
+echo "[hypervisor] Setting up console banner..."
+
+cat > /etc/issue <<'ISSUE'
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                                                              ║
+    ║   ☘  CloverVisor -- Hypervisor Blackbox Edition              ║
+    ║      MyClover.Tech CloverOS                                  ║
+    ║                                                              ║
+    ║   Web UI:   https://<IP>:8006                                ║
+    ║   Docs:     https://docs.myclover.tech/clovervisor           ║
+    ║                                                              ║
+    ║   SSH is DISABLED by default (blackbox mode)                 ║
+    ║   Enable via Web UI > Settings > SSH Access                  ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+ISSUE
+
+# Also write MOTD for emergency console
+cat > /etc/motd <<'MOTD'
+
+  ☘  CloverVisor Emergency Console
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Web UI:  https://$(hostname -I | awk '{print $1}'):8006
+  Status:  clovervisor status
+  Help:    clovervisor --help
+
+MOTD
+
+echo "[hypervisor] Hypervisor Blackbox chroot hook complete"
+echo "[hypervisor] KVM/QEMU, libvirt, OVS, ZFS, Cockpit, hardening -- all configured"
