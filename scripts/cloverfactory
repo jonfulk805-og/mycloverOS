@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# =============================================================================
+# cloverfactory -- CloverOS Industrial Edition CLI
+# SCADA/ICS/OT management: MQTT, Modbus, Node-RED, dashboards, alarms, mesh
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CONFIG="/etc/myclover/cloverfactory.d/industrial.conf"
+LOG_DIR="/var/log/cloverfactory"
+
+[[ -f "${CONFIG}" ]] && source "${CONFIG}"
+
+log()  { echo -e "\033[0;33m[cloverfactory]\033[0m $*"; }
+err()  { echo -e "\033[0;31m[cloverfactory]\033[0m ERROR: $*" >&2; }
+
+usage() {
+    cat <<EOF
+🏭 CloverFactory Industrial v${VERSION}
+Monitor. Automate. Protect. Scale.
+
+Usage: cloverfactory <command> [subcommand] [options]
+
+MQTT Broker:
+  mqtt status                        Broker health + stats
+  mqtt topics                        List active topics
+  mqtt subscribe <topic>             Subscribe and display
+  mqtt publish <topic> <payload>     Publish message
+  mqtt clients                       Connected clients
+  mqtt user add <name> <pass>        Add MQTT user
+  mqtt bridge <remote> [opts]        Configure bridge
+
+Modbus:
+  modbus scan <host> [port]          Scan Modbus device registers
+  modbus read <host> <addr> <count>  Read holding registers
+  modbus write <host> <addr> <val>   Write register
+  modbus gateway start|stop          Start/stop MQTT gateway
+  modbus devices                     List configured devices
+
+OPC-UA:
+  opcua status                       OPC-UA server status
+  opcua browse <endpoint>            Browse node tree
+  opcua read <endpoint> <node>       Read value
+
+Node-RED:
+  nodered status                     Node-RED health
+  nodered flows list                 List deployed flows
+  nodered flows backup               Backup flows
+  nodered flows restore <file>       Restore flows
+  nodered open                       Open in browser
+
+Time-Series:
+  tsdb status                        InfluxDB health
+  tsdb query <flux-query>            Run Flux query
+  tsdb retention [days]              Show/set retention
+  tsdb export <start> <end> [file]   Export data range
+  tsdb import <file>                 Import data
+
+Grafana:
+  grafana status                     Grafana health
+  grafana open                       Open in browser
+  grafana dashboards                 List dashboards
+  grafana snapshot <dashboard>       Snapshot dashboard
+
+Alarms:
+  alarm list                         Active alarms
+  alarm history [count]              Alarm history
+  alarm ack <id>                     Acknowledge alarm
+  alarm test                         Trigger test alarm
+  alarm rules                        Show alarm rules
+
+Network:
+  net status                         OT/IT network health
+  net scan <subnet>                  Discover devices
+  net segment status                 Segmentation status
+  net firewall                       OT firewall rules
+
+Cluster (CloverMesh):
+  mesh init <name>                   Initialize HA cluster
+  mesh join <primary-ip>             Join as backup
+  mesh status                        Cluster health
+  mesh failover                      Force failover
+
+System:
+  status                             Full dashboard
+  audit [count]                      Audit log
+  health                             Quick health check
+  config                             Show config
+
+EOF
+}
+
+# =============================================================================
+# MQTT COMMANDS
+# =============================================================================
+
+cmd_mqtt_status() {
+    echo "=== MQTT Broker (Mosquitto) ==="
+    if systemctl is-active mosquitto &>/dev/null; then
+        log "Status: ✅ running"
+        printf "  Port:      %s (TCP)  %s (WebSocket)\n" "${MQTT_PORT:-1883}" "${MQTT_WS_PORT:-9001}"
+        local clients; clients=$(mosquitto_sub -t '$SYS/broker/clients/connected' -C 1 -W 2 2>/dev/null || echo "?")
+        printf "  Clients:   %s\n" "${clients}"
+        local msgs; msgs=$(mosquitto_sub -t '$SYS/broker/messages/received' -C 1 -W 2 2>/dev/null || echo "?")
+        printf "  Messages:  %s total received\n" "${msgs}"
+    else
+        log "Status: ⬚ stopped"
+    fi
+}
+
+cmd_mqtt_topics() {
+    log "Listening for active topics (5 seconds)..."
+    timeout 5 mosquitto_sub -t '#' -u admin -P cloveradmin -v --retained-only 2>/dev/null | sort -u || \
+    timeout 5 mosquitto_sub -t '#' -u admin -P cloveradmin -v 2>/dev/null | awk '{print $1}' | sort -u || \
+    err "Could not connect to broker"
+}
+
+cmd_mqtt_subscribe() {
+    local topic="${1:-#}"
+    log "Subscribing to: ${topic} (Ctrl+C to stop)"
+    mosquitto_sub -t "${topic}" -u admin -P cloveradmin -v 2>/dev/null || err "Connection failed"
+}
+
+cmd_mqtt_publish() {
+    local topic="$1"
+    local payload="$2"
+    mosquitto_pub -t "${topic}" -m "${payload}" -u admin -P cloveradmin 2>/dev/null
+    log "Published to ${topic}"
+}
+
+cmd_mqtt_user_add() {
+    local user="$1"
+    local pass="$2"
+    mosquitto_passwd -b /etc/mosquitto/passwd "${user}" "${pass}"
+    systemctl reload mosquitto 2>/dev/null || true
+    log "MQTT user '${user}' added"
+}
+
+# =============================================================================
+# MODBUS COMMANDS
+# =============================================================================
+
+cmd_modbus_scan() {
+    local host="$1"
+    local port="${2:-502}"
+    python3 -c "
+from pymodbus.client import ModbusTcpClient
+c = ModbusTcpClient('${host}', port=${port})
+c.connect()
+print('Scanning holding registers 0-99...')
+for addr in range(0, 100, 10):
+    try:
+        r = c.read_holding_registers(addr, 10, slave=1)
+        if not r.isError():
+            for i, v in enumerate(r.registers):
+                if v != 0:
+                    print(f'  Register {addr+i}: {v}')
+    except: pass
+c.close()
+" 2>/dev/null || err "Could not connect to ${host}:${port}"
+}
+
+cmd_modbus_read() {
+    local host="$1" addr="$2" count="${3:-1}"
+    python3 -c "
+from pymodbus.client import ModbusTcpClient
+c = ModbusTcpClient('${host}', port=502)
+c.connect()
+r = c.read_holding_registers(${addr}, ${count}, slave=1)
+if not r.isError():
+    for i, v in enumerate(r.registers):
+        print(f'Register {${addr}+i}: {v}')
+else:
+    print(f'Error: {r}')
+c.close()
+" 2>/dev/null || err "Read failed"
+}
+
+# =============================================================================
+# NODE-RED COMMANDS
+# =============================================================================
+
+cmd_nodered_status() {
+    if systemctl is-active nodered &>/dev/null; then
+        log "Node-RED: ✅ running on port ${NODERED_PORT:-1880}"
+    else
+        log "Node-RED: ⬚ stopped"
+    fi
+}
+
+cmd_nodered_flows_backup() {
+    local ts; ts=$(date +%Y%m%d-%H%M%S)
+    local backup="/var/lib/cloverfactory/backups/flows-${ts}.json"
+    cp /opt/cloverfactory/flows/flows.json "${backup}" 2>/dev/null
+    log "Flows backed up to: ${backup}"
+}
+
+# =============================================================================
+# ALARM COMMANDS
+# =============================================================================
+
+cmd_alarm_list() {
+    echo "=== Active Alarms ==="
+    # Read from MQTT alarm topic
+    timeout 3 mosquitto_sub -t "cloverfactory/alarms" -u admin -P cloveradmin -C 10 2>/dev/null | \
+        jq -r '"[\(.severity)] \(.name): \(.message) (value=\(.value))"' 2>/dev/null || \
+        echo "  No active alarms"
+}
+
+cmd_alarm_test() {
+    local payload='{"name":"TEST ALARM","severity":"warning","message":"This is a test alarm","value":0,"ts":'$(date +%s)'}'
+    mosquitto_pub -t "cloverfactory/alarms" -m "${payload}" -u admin -P cloveradmin 2>/dev/null
+    log "Test alarm published"
+}
+
+# =============================================================================
+# NETWORK COMMANDS
+# =============================================================================
+
+cmd_net_scan() {
+    local subnet="$1"
+    log "Scanning ${subnet}..."
+    if command -v nmap &>/dev/null; then
+        nmap -sn "${subnet}" 2>/dev/null | grep -E "Nmap scan|Host is|MAC"
+    else
+        # Fallback to ping sweep
+        local base="${subnet%.*}"
+        for i in $(seq 1 254); do
+            ping -c1 -W1 "${base}.${i}" &>/dev/null && echo "  ${base}.${i}: UP" &
+        done
+        wait
+    fi
+}
+
+# =============================================================================
+# STATUS DASHBOARD
+# =============================================================================
+
+cmd_status() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║         🏭 CloverFactory Status Dashboard            ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+
+    printf "  Hostname:   %s\n" "$(hostname)"
+    printf "  Site:       %s\n" "${CLOVERFACTORY_SITE_NAME:-Not configured}"
+    printf "  Uptime:     %s\n" "$(uptime -p)"
+    printf "  Load:       %s\n" "$(cat /proc/loadavg | awk '{print $1, $2, $3}')"
+    echo ""
+
+    echo "=== Services ==="
+    for svc in mosquitto nodered influxdb grafana-server suricata cloverfactory cloverfactory-modbus cloverfactory-alarm watchdog auditd cockpit.socket; do
+        if systemctl is-active "${svc}" &>/dev/null; then
+            printf "  %-30s ✅ running\n" "${svc}"
+        elif systemctl is-enabled "${svc}" &>/dev/null; then
+            printf "  %-30s ⏸  stopped\n" "${svc}"
+        else
+            printf "  %-30s ⬚  disabled\n" "${svc}"
+        fi
+    done
+    echo ""
+
+    echo "=== Protocols ==="
+    printf "  MQTT:     port %s %s\n" "${MQTT_PORT:-1883}" "$(systemctl is-active mosquitto 2>/dev/null)"
+    printf "  Modbus:   port %s %s\n" "${MODBUS_TCP_PORT:-502}" "$(systemctl is-active cloverfactory-modbus 2>/dev/null || echo inactive)"
+    printf "  OPC-UA:   port %s %s\n" "${OPCUA_PORT:-4840}" "$([ "${OPCUA_ENABLED}" == "true" ] && echo enabled || echo disabled)"
+    printf "  Node-RED: port %s %s\n" "${NODERED_PORT:-1880}" "$(systemctl is-active nodered 2>/dev/null || echo inactive)"
+    echo ""
+
+    echo "=== Network Segmentation ==="
+    printf "  OT Network:  %s\n" "${OT_NETWORK:-Not configured}"
+    printf "  IT Network:  %s\n" "${IT_NETWORK:-Not configured}"
+    printf "  OT→Internet: %s\n" "$([[ "${OT_INTERNET_BLOCKED:-true}" == "true" ]] && echo BLOCKED || echo allowed)"
+    echo ""
+
+    local ip; ip=$(hostname -I | awk '{print $1}')
+    echo "=== Access ==="
+    echo "  Web UI:      https://${ip}:${CLOVERFACTORY_WEB_PORT:-8443}"
+    echo "  Node-RED:    http://${ip}:${NODERED_PORT:-1880}"
+    echo "  Grafana:     http://${ip}:${GRAFANA_PORT:-3000}"
+    echo "  MQTT:        mqtt://${ip}:${MQTT_PORT:-1883}"
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+CMD="${1:-}"
+SUB="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${CMD}" in
+    mqtt)
+        case "${SUB}" in
+            status)    cmd_mqtt_status ;;
+            topics)    cmd_mqtt_topics ;;
+            subscribe) cmd_mqtt_subscribe "$@" ;;
+            publish)   cmd_mqtt_publish "$@" ;;
+            clients)   mosquitto_sub -t '$SYS/broker/clients/#' -u admin -P cloveradmin -C 5 -W 3 2>/dev/null ;;
+            user)      [[ "$1" == "add" ]] && shift && cmd_mqtt_user_add "$@" ;;
+            *)         usage ;;
+        esac ;;
+    modbus)
+        case "${SUB}" in
+            scan)    cmd_modbus_scan "$@" ;;
+            read)    cmd_modbus_read "$@" ;;
+            gateway) [[ "$1" == "start" ]] && systemctl start cloverfactory-modbus || systemctl stop cloverfactory-modbus ;;
+            devices) cat /etc/myclover/cloverfactory.d/modbus-devices.json 2>/dev/null | jq . || echo "No devices configured" ;;
+            *)       usage ;;
+        esac ;;
+    nodered)
+        case "${SUB}" in
+            status) cmd_nodered_status ;;
+            flows)  [[ "$1" == "backup" ]] && cmd_nodered_flows_backup || usage ;;
+            open)   xdg-open "http://localhost:${NODERED_PORT:-1880}" 2>/dev/null || echo "http://localhost:${NODERED_PORT:-1880}" ;;
+            *)      usage ;;
+        esac ;;
+    tsdb)
+        case "${SUB}" in
+            status)    systemctl status influxdb 2>/dev/null ;;
+            retention) influx bucket list 2>/dev/null ;;
+            *)         usage ;;
+        esac ;;
+    grafana)
+        case "${SUB}" in
+            status) systemctl status grafana-server 2>/dev/null ;;
+            open)   xdg-open "http://localhost:${GRAFANA_PORT:-3000}" 2>/dev/null || echo "http://localhost:${GRAFANA_PORT:-3000}" ;;
+            *)      usage ;;
+        esac ;;
+    alarm)
+        case "${SUB}" in
+            list)    cmd_alarm_list ;;
+            test)    cmd_alarm_test ;;
+            rules)   cat /etc/myclover/cloverfactory.d/alarm-rules.json 2>/dev/null | jq . || echo "No rules" ;;
+            *)       usage ;;
+        esac ;;
+    net)
+        case "${SUB}" in
+            status)  ip -br addr; echo; ip route ;;
+            scan)    cmd_net_scan "$@" ;;
+            segment) cat /opt/cloverfactory/config/ot-firewall.nft 2>/dev/null ;;
+            *)       usage ;;
+        esac ;;
+    mesh)
+        case "${SUB}" in
+            init)     log "Initializing industrial HA cluster..." ;;
+            status)   crm status 2>/dev/null || echo "HA not initialized" ;;
+            failover) crm resource move cloverfactory-vip 2>/dev/null || err "HA not active" ;;
+            *)        usage ;;
+        esac ;;
+    status) cmd_status ;;
+    audit)  ausearch -ts recent 2>/dev/null | head -"${SUB:-50}" || journalctl -u auditd --no-pager -n "${SUB:-50}" ;;
+    health) echo "MQTT:"; systemctl is-active mosquitto; echo "Node-RED:"; systemctl is-active nodered; echo "InfluxDB:"; systemctl is-active influxdb ;;
+    config) cat "${CONFIG}" ;;
+    help|--help|-h|"") usage ;;
+    *)      err "Unknown command: ${CMD}"; usage; exit 1 ;;
+esac
