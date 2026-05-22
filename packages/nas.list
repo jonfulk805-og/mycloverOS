@@ -1,0 +1,113 @@
+# =============================================================================
+# mycloverOS NAS Edition — Package List
+# TrueNAS-grade ZFS storage + app containers + file sharing protocols
+# Build: sudo ./build.sh nas
+# =============================================================================
+
+# --- ZFS (installed from contrib via hook) ---
+# zfsutils-linux  zfs-dkms  zfs-zed  (handled by 0700 hook)
+
+# --- File Sharing Protocols ---
+# SMB/CIFS (Windows shares, Time Machine)
+samba
+samba-common-bin
+samba-vfs-modules
+wsdd2
+# NFS (Linux/Unix shares)
+nfs-kernel-server
+nfs-common
+# iSCSI target (block-level storage for VMs, ESXi, etc.)
+tgt
+targetcli-fb
+open-iscsi
+# FTP/SFTP
+proftpd-basic
+# WebDAV (via nginx module)
+nginx-extras
+
+# --- S.M.A.R.T. Disk Health Monitoring ---
+smartmontools
+
+# --- Disk / Filesystem Utilities ---
+parted
+gdisk
+lsscsi
+nvme-cli
+hdparm
+sdparm
+sg3-utils
+mdadm
+lvm2
+xfsprogs
+btrfs-progs
+e2fsprogs
+dosfstools
+ntfs-3g
+exfat-fuse
+exfat-utils
+
+# --- Performance & Benchmarking ---
+fio
+bonnie++
+iotop
+sysstat
+dstat
+
+# --- Compression ---
+zstd
+lz4
+pigz
+
+# --- Backup / Replication ---
+restic
+rsync
+rclone
+borgbackup
+
+# --- Container Runtime (for NAS apps) ---
+# Docker CE installed via existing 0150-docker.hook.chroot
+# docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# --- Web Management UI ---
+cockpit
+cockpit-storaged
+cockpit-networkmanager
+cockpit-packagekit
+
+# --- Networking ---
+avahi-daemon
+avahi-utils
+keepalived
+ethtool
+bridge-utils
+vlan
+
+# --- HA Clustering (optional, enabled via config) ---
+corosync
+pacemaker
+pcs
+crmsh
+resource-agents
+fence-agents
+drbd-utils
+
+# --- UPS Monitoring ---
+nut
+nut-client
+
+# --- Email Alerts ---
+msmtp
+msmtp-mta
+
+# --- Misc ---
+tmux
+htop
+iftop
+ncdu
+tree
+jq
+bc
+at
+cron
+acl
+attr
