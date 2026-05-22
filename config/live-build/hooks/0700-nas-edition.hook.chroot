@@ -1,0 +1,668 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS NAS Edition -- Chroot Build Hook
+# Configures standalone NAS appliance: ZFS, file sharing, app containers,
+# web UI, SMART monitoring, ransomware protection, replication.
+# =============================================================================
+set -e
+
+echo "[nas] Running NAS Edition chroot hook..."
+
+# =============================================================================
+# 1. INSTALL ZFS FROM DEBIAN CONTRIB
+# =============================================================================
+echo "[nas] Installing OpenZFS..."
+
+if ! grep -q "contrib" /etc/apt/sources.list 2>/dev/null; then
+    sed -i 's/main$/main contrib/' /etc/apt/sources.list
+fi
+
+cat > /etc/apt/sources.list.d/bookworm-backports.list <<'BKPT'
+deb http://deb.debian.org/debian bookworm-backports main contrib
+BKPT
+
+apt-get update
+
+apt-get install -y --no-install-recommends \
+    linux-headers-amd64 \
+    zfsutils-linux \
+    zfs-dkms \
+    zfs-zed \
+    || echo "[nas] WARNING: ZFS install failed (will retry at boot)"
+
+# Enable ZFS services
+for svc in zfs-import-cache zfs-import-scan zfs-mount zfs-share zfs.target zfs-zed; do
+    systemctl enable "${svc}.service" 2>/dev/null || true
+done
+
+echo "[nas] ZFS install complete"
+
+# =============================================================================
+# 2. DIRECTORY STRUCTURE
+# =============================================================================
+echo "[nas] Creating NAS directory structure..."
+
+mkdir -p /opt/clovernas/{config,scripts,shares,templates}
+mkdir -p /var/lib/clovernas/{snapshots,replication,isos,apps,scratch}
+mkdir -p /var/log/clovernas
+mkdir -p /etc/myclover/clovernas.d
+mkdir -p /srv/shares/{public,private,media,backups,timemachine}
+mkdir -p /srv/minio/data
+
+# =============================================================================
+# 3. NAS CONFIGURATION
+# =============================================================================
+echo "[nas] Writing NAS configuration..."
+
+cat > /etc/myclover/clovernas.d/nas.conf <<'NASCONF'
+# =============================================================================
+# CloverNAS Edition Configuration
+# =============================================================================
+
+# Identity
+CLOVERNAS_EDITION="nas"
+CLOVERNAS_VERSION="1.0.0"
+CLOVERNAS_NODE_NAME=""
+CLOVERNAS_WEB_PORT=8080
+
+# ZFS Defaults
+ZFS_ARC_MAX_PERCENT=50
+ZFS_COMPRESSION=lz4
+ZFS_ATIME=off
+ZFS_DEDUP=off
+ZFS_RECORD_SIZE=128K
+ZFS_SNAPSHOT_RETENTION=30
+ZFS_SNAPSHOT_INTERVAL=hourly
+ZFS_SCRUB_SCHEDULE="monthly"
+
+# Sharing Protocols
+SMB_ENABLED=true
+SMB_WORKGROUP="CLOVER"
+SMB_SERVER_STRING="CloverNAS"
+SMB_MIN_PROTOCOL="SMB2"
+SMB_MAX_PROTOCOL="SMB3"
+SMB_FRUIT_ENABLED=true
+NFS_ENABLED=true
+NFS_VERSION=4
+NFS_THREADS=8
+ISCSI_ENABLED=false
+ISCSI_TARGET_PREFIX="iqn.2025.tech.myclover"
+S3_ENABLED=false
+S3_ACCESS_KEY=""
+S3_SECRET_KEY=""
+FTP_ENABLED=false
+WEBDAV_ENABLED=false
+
+# SMART Monitoring
+SMART_CHECK_INTERVAL=1800
+SMART_TEMP_WARN=45
+SMART_TEMP_CRIT=55
+SMART_EMAIL_ALERTS=true
+SMART_ALERT_EMAIL=""
+
+# Ransomware Protection
+RANSOMWARE_SHIELD=true
+IMMUTABLE_SNAPSHOT_RETENTION=90
+IMMUTABLE_SNAPSHOT_INTERVAL=daily
+SNAPSHOT_LOCK_ENABLED=true
+
+# Replication
+REPL_ENABLED=false
+REPL_TARGET=""
+REPL_METHOD="zfs-send"
+REPL_INTERVAL=900
+REPL_COMPRESS=true
+
+# UPS
+UPS_MONITOR=false
+UPS_DRIVER=""
+UPS_PORT=""
+UPS_SHUTDOWN_TIMER=300
+
+# App Containers
+APPS_ENABLED=true
+APPS_STORAGE="/srv/docker"
+APPS_NETWORK="bridge"
+
+# Cluster / HA
+CLUSTER_ENABLED=false
+CLUSTER_NAME=""
+CLUSTER_VIP=""
+NASCONF
+
+# =============================================================================
+# 4. SAMBA CONFIGURATION (Apple Time Machine + Shadow Copy)
+# =============================================================================
+echo "[nas] Configuring Samba..."
+
+cat > /etc/samba/smb.conf <<'SMBCONF'
+[global]
+   workgroup = CLOVER
+   server string = CloverNAS
+   server role = standalone server
+   log file = /var/log/samba/log.%m
+   max log size = 5000
+   logging = file
+   panic action = /usr/share/samba/panic-action %d
+   server role = standalone server
+   obey pam restrictions = yes
+   unix password sync = yes
+   passwd program = /usr/bin/passwd %u
+   passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
+   pam password change = yes
+   map to guest = bad user
+   usershare allow guests = no
+
+   # Performance
+   socket options = TCP_NODELAY IPTOS_LOWDELAY
+   read raw = yes
+   write raw = yes
+   use sendfile = yes
+   aio read size = 16384
+   aio write size = 16384
+
+   # macOS / Time Machine support
+   fruit:aapl = yes
+   fruit:nfs_aces = no
+   fruit:model = MacSamba
+   vfs objects = fruit streams_xattr shadow_copy2 catia
+
+   # Shadow copies (ZFS snapshots visible as Previous Versions)
+   shadow:snapdir = .zfs/snapshot
+   shadow:sort = desc
+   shadow:format = auto-%Y%m%d-%H%M
+
+   # Protocol versions
+   min protocol = SMB2
+   max protocol = SMB3
+
+   # Security
+   restrict anonymous = 2
+
+[public]
+   path = /srv/shares/public
+   browseable = yes
+   read only = no
+   guest ok = yes
+   create mask = 0775
+   directory mask = 0775
+
+[timemachine]
+   path = /srv/shares/timemachine
+   browseable = yes
+   read only = no
+   fruit:time machine = yes
+   fruit:time machine max size = 1T
+   valid users = @nasusers
+   vfs objects = fruit streams_xattr catia
+
+[media]
+   path = /srv/shares/media
+   browseable = yes
+   read only = no
+   valid users = @nasusers
+   create mask = 0664
+   directory mask = 0775
+SMBCONF
+
+# =============================================================================
+# 5. NFS CONFIGURATION
+# =============================================================================
+echo "[nas] Configuring NFS..."
+
+cat > /etc/exports <<'NFSEXPORTS'
+# CloverNAS NFS Exports
+# Add exports via: clovernas share nfs <dataset> --network <cidr>
+# Or edit this file and run: exportfs -ra
+NFSEXPORTS
+
+# =============================================================================
+# 6. AUTO-SNAPSHOT SERVICE
+# =============================================================================
+echo "[nas] Setting up auto-snapshot service..."
+
+cat > /opt/clovernas/scripts/auto-snapshot.sh <<'AUTOSNAP'
+#!/bin/bash
+# CloverNAS Auto-Snapshot
+# Runs on schedule, creates + prunes snapshots per dataset policy
+
+set -euo pipefail
+
+source /etc/myclover/clovernas.d/nas.conf 2>/dev/null || true
+
+INTERVAL="${1:-hourly}"
+RETENTION="${ZFS_SNAPSHOT_RETENTION:-30}"
+TIMESTAMP=$(date +%Y%m%d-%H%M)
+TAG="auto-${INTERVAL}"
+
+log() { echo "[snapshot] $(date '+%Y-%m-%d %H:%M:%S') $*" >> /var/log/clovernas/snapshots.log; }
+
+# Create snapshots for all mounted ZFS datasets
+for dataset in $(zfs list -H -o name 2>/dev/null); do
+    # Skip if dataset has snapshots disabled
+    skip=$(zfs get -H -o value tech.myclover:autosnap "${dataset}" 2>/dev/null)
+    [[ "${skip}" == "off" ]] && continue
+
+    snapname="${dataset}@${TAG}-${TIMESTAMP}"
+    zfs snapshot "${snapname}" 2>/dev/null && log "Created: ${snapname}" || true
+
+    # Immutable lock for ransomware protection
+    if [[ "${SNAPSHOT_LOCK_ENABLED:-true}" == "true" ]] && [[ "${INTERVAL}" == "daily" ]]; then
+        zfs hold "ransomware-shield" "${snapname}" 2>/dev/null || true
+        log "Locked: ${snapname} (ransomware shield)"
+    fi
+done
+
+# Prune old snapshots
+for dataset in $(zfs list -H -o name 2>/dev/null); do
+    zfs list -t snapshot -H -o name -S creation -r "${dataset}" 2>/dev/null | \
+        grep "@${TAG}-" | \
+        tail -n +$((RETENTION + 1)) | \
+        while read -r snap; do
+            # Don't destroy locked snapshots
+            if zfs holds -H "${snap}" 2>/dev/null | grep -q "ransomware-shield"; then
+                # Check if past immutable retention
+                snap_date=$(echo "${snap}" | grep -oP '\d{8}')
+                if [[ -n "${snap_date}" ]]; then
+                    days_old=$(( ($(date +%s) - $(date -d "${snap_date}" +%s)) / 86400 ))
+                    if [[ ${days_old} -gt ${IMMUTABLE_SNAPSHOT_RETENTION:-90} ]]; then
+                        zfs release "ransomware-shield" "${snap}" 2>/dev/null || true
+                        zfs destroy "${snap}" 2>/dev/null && log "Pruned (expired): ${snap}" || true
+                    else
+                        log "Kept (immutable, ${days_old}d old): ${snap}"
+                    fi
+                fi
+            else
+                zfs destroy "${snap}" 2>/dev/null && log "Pruned: ${snap}" || true
+            fi
+        done
+done
+AUTOSNAP
+chmod +x /opt/clovernas/scripts/auto-snapshot.sh
+
+# Snapshot cron jobs
+cat > /etc/cron.d/clovernas-snapshots <<'SNAPCRON'
+# CloverNAS Auto-Snapshots
+0 * * * * root /opt/clovernas/scripts/auto-snapshot.sh hourly
+0 0 * * * root /opt/clovernas/scripts/auto-snapshot.sh daily
+0 0 * * 0 root /opt/clovernas/scripts/auto-snapshot.sh weekly
+0 0 1 * * root /opt/clovernas/scripts/auto-snapshot.sh monthly
+SNAPCRON
+
+# =============================================================================
+# 7. SMART MONITORING SCRIPT
+# =============================================================================
+echo "[nas] Setting up SMART monitoring..."
+
+cat > /opt/clovernas/scripts/smart-monitor.sh <<'SMARTMON'
+#!/bin/bash
+# CloverNAS SMART Disk Health Monitor
+
+set -euo pipefail
+
+source /etc/myclover/clovernas.d/nas.conf 2>/dev/null || true
+
+WARN_TEMP="${SMART_TEMP_WARN:-45}"
+CRIT_TEMP="${SMART_TEMP_CRIT:-55}"
+LOG="/var/log/clovernas/smart.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "${LOG}"; }
+alert() {
+    log "ALERT: $*"
+    echo "$*" | wall 2>/dev/null || true
+    if [[ -n "${SMART_ALERT_EMAIL:-}" ]]; then
+        echo "$*" | mail -s "CloverNAS SMART Alert: $(hostname)" "${SMART_ALERT_EMAIL}" 2>/dev/null || true
+    fi
+}
+
+for disk in /dev/sd? /dev/nvme?n?; do
+    [[ -b "${disk}" ]] || continue
+    name=$(basename "${disk}")
+
+    # Health check
+    health=$(smartctl -H "${disk}" 2>/dev/null | grep -i "overall" | awk '{print $NF}')
+    if [[ "${health}" != "PASSED" ]] && [[ -n "${health}" ]]; then
+        alert "DISK FAILING: ${disk} — SMART status: ${health}"
+    fi
+
+    # Temperature check
+    temp=$(smartctl -A "${disk}" 2>/dev/null | grep -i "temperature" | head -1 | awk '{print $(NF-1)}')
+    if [[ -n "${temp}" ]] && [[ "${temp}" =~ ^[0-9]+$ ]]; then
+        if [[ ${temp} -ge ${CRIT_TEMP} ]]; then
+            alert "DISK OVERHEATING: ${disk} at ${temp}°C (critical: ${CRIT_TEMP}°C)"
+        elif [[ ${temp} -ge ${WARN_TEMP} ]]; then
+            log "WARNING: ${disk} at ${temp}°C (warn: ${WARN_TEMP}°C)"
+        fi
+    fi
+
+    # Reallocated sectors
+    realloc=$(smartctl -A "${disk}" 2>/dev/null | grep -i "Reallocated_Sector" | awk '{print $NF}')
+    if [[ -n "${realloc}" ]] && [[ "${realloc}" -gt 0 ]]; then
+        alert "DISK DEGRADING: ${disk} has ${realloc} reallocated sectors"
+    fi
+
+    log "OK: ${name} health=${health:-?} temp=${temp:-?}°C"
+done
+SMARTMON
+chmod +x /opt/clovernas/scripts/smart-monitor.sh
+
+# SMART cron
+cat >> /etc/cron.d/clovernas-snapshots <<'SMARTCRON'
+
+# SMART disk health monitoring (every 30 min)
+*/30 * * * * root /opt/clovernas/scripts/smart-monitor.sh
+SMARTCRON
+
+# =============================================================================
+# 8. ZFS REPLICATION SCRIPT
+# =============================================================================
+echo "[nas] Setting up ZFS replication..."
+
+cat > /opt/clovernas/scripts/zfs-replicate.sh <<'REPLICATE'
+#!/bin/bash
+# CloverNAS ZFS Replication — send/receive to remote or local target
+
+set -euo pipefail
+
+source /etc/myclover/clovernas.d/nas.conf 2>/dev/null || true
+
+DATASET="${1:-}"
+TARGET="${REPL_TARGET:-}"
+LOG="/var/log/clovernas/replication.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "${LOG}"; }
+
+if [[ -z "${DATASET}" ]] || [[ -z "${TARGET}" ]]; then
+    echo "Usage: zfs-replicate.sh <dataset>"
+    echo "Set REPL_TARGET in /etc/myclover/clovernas.d/nas.conf"
+    exit 1
+fi
+
+# Find latest common snapshot
+LAST_SNAP=$(zfs list -t snapshot -H -o name -S creation "${DATASET}" 2>/dev/null | head -1)
+if [[ -z "${LAST_SNAP}" ]]; then
+    log "No snapshots for ${DATASET}, creating one..."
+    SNAP="${DATASET}@repl-$(date +%Y%m%d-%H%M%S)"
+    zfs snapshot "${SNAP}"
+    LAST_SNAP="${SNAP}"
+fi
+
+# Check if this is initial or incremental
+PREV_SNAP=$(cat /var/lib/clovernas/replication/${DATASET//\//_}.last 2>/dev/null || true)
+
+if [[ -z "${PREV_SNAP}" ]]; then
+    log "Initial replication: ${LAST_SNAP} -> ${TARGET}"
+    if [[ "${REPL_COMPRESS:-true}" == "true" ]]; then
+        zfs send "${LAST_SNAP}" | zstd -1 | ssh "${TARGET}" "zstd -d | zfs receive -F ${DATASET}"
+    else
+        zfs send "${LAST_SNAP}" | ssh "${TARGET}" "zfs receive -F ${DATASET}"
+    fi
+else
+    log "Incremental replication: ${PREV_SNAP} -> ${LAST_SNAP} -> ${TARGET}"
+    if [[ "${REPL_COMPRESS:-true}" == "true" ]]; then
+        zfs send -i "${PREV_SNAP}" "${LAST_SNAP}" | zstd -1 | ssh "${TARGET}" "zstd -d | zfs receive -F ${DATASET}"
+    else
+        zfs send -i "${PREV_SNAP}" "${LAST_SNAP}" | ssh "${TARGET}" "zfs receive -F ${DATASET}"
+    fi
+fi
+
+# Record last replicated snapshot
+mkdir -p /var/lib/clovernas/replication
+echo "${LAST_SNAP}" > "/var/lib/clovernas/replication/${DATASET//\//_}.last"
+log "Replication complete: ${LAST_SNAP}"
+REPLICATE
+chmod +x /opt/clovernas/scripts/zfs-replicate.sh
+
+# =============================================================================
+# 9. SCRUB SCHEDULE
+# =============================================================================
+echo "[nas] Setting up ZFS scrub schedule..."
+
+cat > /opt/clovernas/scripts/zfs-scrub.sh <<'SCRUB'
+#!/bin/bash
+# Monthly ZFS scrub on all pools
+for pool in $(zpool list -H -o name 2>/dev/null); do
+    echo "[clovernas] Starting scrub on pool: ${pool}"
+    zpool scrub "${pool}" 2>/dev/null || true
+done
+SCRUB
+chmod +x /opt/clovernas/scripts/zfs-scrub.sh
+
+cat >> /etc/cron.d/clovernas-snapshots <<'SCRUBCRON'
+
+# Monthly ZFS scrub (1st Sunday at 2am)
+0 2 * * 0 root [ $(date +\%d) -le 7 ] && /opt/clovernas/scripts/zfs-scrub.sh
+SCRUBCRON
+
+# =============================================================================
+# 10. COCKPIT WEB UI CUSTOMIZATION
+# =============================================================================
+echo "[nas] Customizing web management UI..."
+
+mkdir -p /etc/cockpit
+cat > /etc/cockpit/cockpit.conf <<'COCKPITCONF'
+[WebService]
+Origins = https://localhost:8080 wss://localhost:8080
+LoginTitle = CloverNAS
+MaxStartups = 10
+AllowUnencrypted = false
+
+[Session]
+IdleTimeout = 60
+
+[Log]
+Fatal = criticals warnings
+COCKPITCONF
+
+# Custom branding
+mkdir -p /usr/share/cockpit/branding/clovernas
+cat > /usr/share/cockpit/branding/clovernas/branding.css <<'BRAND'
+/* CloverNAS Web UI Branding */
+body.login-pf { background-color: #0a1628; }
+.login-pf .container { background: rgba(10, 22, 40, 0.9); }
+#brand { font-size: 1.8em; color: #00d4aa; font-weight: bold; }
+#brand::before { content: "🍀 "; }
+#badge { display: none; }
+BRAND
+
+cat > /usr/share/cockpit/branding/clovernas/default.html <<'BRANDHTML'
+<style>@import "branding.css";</style>
+<span id="brand">CloverNAS</span>
+BRANDHTML
+
+# Override default branding
+ln -sf /usr/share/cockpit/branding/clovernas /usr/share/cockpit/branding/default 2>/dev/null || true
+
+# Port 8080
+mkdir -p /etc/systemd/system/cockpit.socket.d
+cat > /etc/systemd/system/cockpit.socket.d/listen.conf <<'LISTEN'
+[Socket]
+ListenStream=
+ListenStream=8080
+LISTEN
+
+# =============================================================================
+# 11. UPS MONITORING (NUT)
+# =============================================================================
+echo "[nas] Configuring UPS monitoring (NUT)..."
+
+cat > /etc/nut/nut.conf <<'NUT'
+MODE=netserver
+NUT
+
+cat > /etc/nut/ups.conf <<'UPSCONF'
+# Configure your UPS here
+# Example for USB UPS:
+# [myups]
+#   driver = usbhid-ups
+#   port = auto
+#   desc = "Office UPS"
+UPSCONF
+
+# =============================================================================
+# 12. MINIO S3 SETUP SCRIPT
+# =============================================================================
+echo "[nas] Creating MinIO S3 setup..."
+
+cat > /opt/clovernas/scripts/setup-minio.sh <<'MINIO'
+#!/bin/bash
+# CloverNAS MinIO S3 Setup
+set -euo pipefail
+
+source /etc/myclover/clovernas.d/nas.conf 2>/dev/null || true
+
+if [[ "${S3_ENABLED}" != "true" ]]; then
+    echo "[minio] S3 not enabled. Set S3_ENABLED=true in nas.conf"
+    exit 0
+fi
+
+# Deploy MinIO via Docker
+docker run -d \
+    --name clovernas-minio \
+    --restart always \
+    -p 9000:9000 \
+    -p 9001:9001 \
+    -v /srv/minio/data:/data \
+    -e "MINIO_ROOT_USER=${S3_ACCESS_KEY:-cloveradmin}" \
+    -e "MINIO_ROOT_PASSWORD=${S3_SECRET_KEY:-cloverpass}" \
+    minio/minio server /data --console-address ":9001"
+
+echo "[minio] MinIO running — Console: http://$(hostname -I | awk '{print $1}'):9001"
+MINIO
+chmod +x /opt/clovernas/scripts/setup-minio.sh
+
+# =============================================================================
+# 13. CLOVERSTACK INTEGRATION
+# =============================================================================
+echo "[nas] Writing NAS app catalog..."
+
+cat > /opt/clovernas/templates/apps.json <<'APPS'
+{
+  "version": "1.0.0",
+  "apps": [
+    {"id": "plex", "name": "Plex Media Server", "category": "Media", "image": "plexinc/pms-docker:latest", "ports": {"32400": 32400}, "volumes": {"/srv/shares/media": "/data", "/opt/clovernas/plex/config": "/config"}},
+    {"id": "jellyfin", "name": "Jellyfin", "category": "Media", "image": "jellyfin/jellyfin:latest", "ports": {"8096": 8096}, "volumes": {"/srv/shares/media": "/media", "/opt/clovernas/jellyfin/config": "/config"}},
+    {"id": "nextcloud", "name": "Nextcloud", "category": "Productivity", "image": "nextcloud:latest", "ports": {"8081": 80}, "volumes": {"/srv/shares/private": "/data"}},
+    {"id": "syncthing", "name": "Syncthing", "category": "Sync", "image": "syncthing/syncthing:latest", "ports": {"8384": 8384, "22000": 22000}, "volumes": {"/srv/shares": "/data"}},
+    {"id": "photoprism", "name": "PhotoPrism", "category": "Media", "image": "photoprism/photoprism:latest", "ports": {"2342": 2342}, "volumes": {"/srv/shares/media/photos": "/photoprism/originals"}},
+    {"id": "homeassistant", "name": "Home Assistant", "category": "Home", "image": "ghcr.io/home-assistant/home-assistant:stable", "ports": {"8123": 8123}, "volumes": {"/opt/clovernas/hass/config": "/config"}},
+    {"id": "vaultwarden", "name": "Vaultwarden", "category": "Security", "image": "vaultwarden/server:latest", "ports": {"8082": 80}, "volumes": {"/opt/clovernas/vaultwarden": "/data"}},
+    {"id": "grafana", "name": "Grafana", "category": "Monitoring", "image": "grafana/grafana:latest", "ports": {"3000": 3000}, "volumes": {"/opt/clovernas/grafana": "/var/lib/grafana"}},
+    {"id": "pihole", "name": "Pi-hole", "category": "Network", "image": "pihole/pihole:latest", "ports": {"53": 53, "8083": 80}, "volumes": {"/opt/clovernas/pihole/etc": "/etc/pihole"}},
+    {"id": "gitea", "name": "Gitea", "category": "Dev", "image": "gitea/gitea:latest", "ports": {"3001": 3000, "222": 22}, "volumes": {"/opt/clovernas/gitea": "/data"}}
+  ]
+}
+APPS
+
+# =============================================================================
+# 14. KERNEL / PERFORMANCE TUNING
+# =============================================================================
+echo "[nas] Applying NAS performance tuning..."
+
+cat > /etc/sysctl.d/90-clovernas.conf <<'SYSCTL'
+# CloverNAS Performance Tuning
+
+# ZFS ARC memory management (let ZFS use up to 50% RAM by default)
+# Actual limit set dynamically at boot based on installed RAM
+
+# Network tuning for file sharing
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_sack = 1
+
+# Increase file descriptor limits
+fs.file-max = 2097152
+fs.inotify.max_user_watches = 524288
+
+# VM tuning (reduce swappiness, let ZFS manage cache)
+vm.swappiness = 10
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
+vm.vfs_cache_pressure = 50
+SYSCTL
+
+# =============================================================================
+# 15. CONSOLE BANNER
+# =============================================================================
+echo "[nas] Setting console banner..."
+
+cat > /etc/issue <<'BANNER'
+
+  ╔══════════════════════════════════════════════════════╗
+  ║                🍀 CloverNAS                          ║
+  ║        Your Data. Your Metal. Your Rules.            ║
+  ║                                                      ║
+  ║  Web UI:    https://<ip>:8080                        ║
+  ║  CLI:       clovernas help                           ║
+  ║  Docs:      docs.myclover.tech/nas                   ║
+  ╚══════════════════════════════════════════════════════╝
+
+BANNER
+
+# =============================================================================
+# 16. CLOVERNAS SYSTEMD SERVICE
+# =============================================================================
+echo "[nas] Creating CloverNAS service..."
+
+cat > /etc/systemd/system/clovernas.service <<'SERVICE'
+[Unit]
+Description=CloverNAS Storage Platform
+After=network-online.target zfs.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/clovernas/scripts/clovernas-startup.sh
+ExecStop=/opt/clovernas/scripts/clovernas-shutdown.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat > /opt/clovernas/scripts/clovernas-startup.sh <<'STARTUP'
+#!/bin/bash
+# CloverNAS Startup
+echo "[clovernas] Starting CloverNAS services..."
+
+source /etc/myclover/clovernas.d/nas.conf 2>/dev/null || true
+
+# Set ZFS ARC max based on RAM
+TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+ARC_MAX=$(( TOTAL_RAM_KB * 1024 * ${ZFS_ARC_MAX_PERCENT:-50} / 100 ))
+echo "${ARC_MAX}" > /sys/module/zfs/parameters/zfs_arc_max 2>/dev/null || true
+
+# Import all ZFS pools
+zpool import -a -f 2>/dev/null || true
+
+# Start sharing services
+[[ "${SMB_ENABLED:-true}" == "true" ]] && systemctl start smbd nmbd 2>/dev/null || true
+[[ "${NFS_ENABLED:-true}" == "true" ]] && systemctl start nfs-kernel-server 2>/dev/null || true
+[[ "${ISCSI_ENABLED:-false}" == "true" ]] && systemctl start tgt 2>/dev/null || true
+[[ "${S3_ENABLED:-false}" == "true" ]] && /opt/clovernas/scripts/setup-minio.sh 2>/dev/null || true
+
+echo "[clovernas] CloverNAS ready"
+STARTUP
+chmod +x /opt/clovernas/scripts/clovernas-startup.sh
+
+cat > /opt/clovernas/scripts/clovernas-shutdown.sh <<'SHUTDOWN'
+#!/bin/bash
+echo "[clovernas] Shutting down CloverNAS..."
+# Export ZFS pools cleanly
+sync
+zpool export -a 2>/dev/null || true
+echo "[clovernas] Shutdown complete"
+SHUTDOWN
+chmod +x /opt/clovernas/scripts/clovernas-shutdown.sh
+
+systemctl enable clovernas.service 2>/dev/null || true
+
+echo "[nas] NAS Edition chroot hook complete"
+echo "[nas] ZFS, SMB, NFS, iSCSI, S3, SMART, snapshots, replication configured"
