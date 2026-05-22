@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+# =============================================================================
+# clovercreate -- CloverOS Creator Edition CLI
+# Content creation workstation: projects, renders, streaming, AI, mesh render
+# =============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CONFIG="/etc/myclover/clovercreate.d/creator.conf"
+LOG_DIR="/var/log/clovercreate"
+
+[[ -f "${CONFIG}" ]] && source "${CONFIG}"
+
+log()  { echo -e "\033[0;35m[clovercreate]\033[0m $*"; }
+err()  { echo -e "\033[0;31m[clovercreate]\033[0m ERROR: $*" >&2; }
+
+usage() {
+    cat <<EOF
+🍀 CloverOS Creator Edition v${VERSION}
+Create. Stream. Publish. Profit.
+
+Usage: clovercreate <command> [subcommand] [options]
+
+Projects:
+  project new <template> <name>     Create project from template
+  project list                      List projects
+  project open <name>               Open project folder
+  project archive <name>            Archive project (compress)
+  project templates                 List available templates
+
+Rendering:
+  render local <file.blend> [opts]  Render locally (Blender)
+  render mesh <file.blend> [opts]   Distributed render (CloverMesh)
+  render status                     Current render job status
+  render cancel                     Cancel active render
+
+Streaming:
+  stream start [--key KEY]          Start RTMP streaming server
+  stream stop                       Stop streaming
+  stream status                     Stream health + viewers
+  stream record start|stop          Toggle stream recording
+
+AI Tools:
+  ai chat [model]                   Chat with local LLM (Ollama)
+  ai models                         List available models
+  ai pull <model>                   Download AI model
+  ai image <prompt>                 Generate image (if SD installed)
+  ai transcribe <audio>             Transcribe audio (Whisper)
+
+GPU:
+  gpu status                        GPU info and utilization
+  gpu drivers                       Install/update GPU drivers
+  gpu benchmark                     Run GPU benchmark
+
+Audio:
+  audio setup                       Configure JACK audio
+  audio latency                     Check audio latency
+  audio devices                     List audio devices
+
+Apps:
+  app install godot                 Install Godot Engine
+  app install vscode                Install VS Code
+  app install ollama                Install Ollama AI
+  app install streaming             Setup streaming server
+
+Cluster (CloverMesh):
+  mesh init <name>                  Initialize render cluster
+  mesh join <primary-ip>            Join render cluster
+  mesh status                       Cluster health
+  mesh nodes                        List render nodes
+
+System:
+  status                            Full system dashboard
+  config                            Show active config
+  update                            Update CloverCreate
+
+EOF
+}
+
+# =============================================================================
+# PROJECT COMMANDS
+# =============================================================================
+
+cmd_project_new() {
+    local template="$1"
+    local name="$2"
+    local dir="${PROJECTS_DIR:-/home/clover/Projects}/${name}"
+
+    if [[ -d "${dir}" ]]; then
+        err "Project '${name}' already exists at ${dir}"
+        exit 1
+    fi
+
+    mkdir -p "${dir}"
+
+    case "${template}" in
+        youtube-video)
+            mkdir -p "${dir}"/{footage,audio,graphics,exports,thumbnails}
+            echo "# ${name}" > "${dir}/README.md"
+            echo "YouTube video project created: $(date)" >> "${dir}/README.md"
+            log "YouTube project '${name}' created"
+            log "  footage/  audio/  graphics/  exports/  thumbnails/"
+            ;;
+        podcast)
+            mkdir -p "${dir}"/{episodes,intros,outros,exports}
+            echo "# ${name} Podcast" > "${dir}/README.md"
+            log "Podcast project '${name}' created"
+            ;;
+        music-production)
+            mkdir -p "${dir}"/{sessions,samples,stems,masters,artwork}
+            log "Music project '${name}' created"
+            ;;
+        3d-animation)
+            mkdir -p "${dir}"/{models,textures,animations,renders,compositing}
+            log "3D project '${name}' created"
+            ;;
+        game-dev)
+            mkdir -p "${dir}"/{src,assets/{sprites,audio,models},builds,docs}
+            log "Game dev project '${name}' created"
+            ;;
+        graphic-design)
+            mkdir -p "${dir}"/{source,exports,fonts,references}
+            log "Design project '${name}' created"
+            ;;
+        photo-editing)
+            mkdir -p "${dir}"/{raw,edited,exports,presets}
+            log "Photo project '${name}' created"
+            ;;
+        livestream)
+            mkdir -p "${dir}"/{scenes,overlays,alerts,recordings}
+            log "Livestream project '${name}' created"
+            ;;
+        web-dev)
+            mkdir -p "${dir}"/{src,public,assets}
+            echo '{"name":"'"${name}"'","version":"1.0.0"}' > "${dir}/package.json"
+            log "Web dev project '${name}' created"
+            ;;
+        ai-art)
+            mkdir -p "${dir}"/{prompts,outputs,favorites,models}
+            log "AI art project '${name}' created"
+            ;;
+        *)
+            err "Unknown template: ${template}"
+            echo "Available: youtube-video podcast music-production 3d-animation game-dev"
+            echo "           graphic-design photo-editing livestream web-dev ai-art"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_project_templates() {
+    local catalog="/opt/clovercreate/templates/templates.json"
+    if [[ -f "${catalog}" ]]; then
+        echo ""
+        echo "🍀 CloverCreate Project Templates"
+        echo "═══════════════════════════════════════════"
+        jq -r '.templates[] | "  \(.id)\t\(.name)\t[\(.type)]"' "${catalog}" | column -t -s $'\t'
+        echo ""
+        echo "Create: clovercreate project new <template> <name>"
+    else
+        echo "Templates: youtube-video podcast music-production 3d-animation game-dev"
+        echo "           graphic-design photo-editing livestream web-dev ai-art"
+    fi
+}
+
+# =============================================================================
+# RENDER COMMANDS
+# =============================================================================
+
+cmd_render_local() {
+    local file="$1"; shift
+    local start=1 end=250 output="${RENDERS_DIR:-/home/clover/Renders}/"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--start) start="$2"; shift 2 ;;
+            -e|--end)   end="$2"; shift 2 ;;
+            -o|--output) output="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    log "Rendering ${file} (frames ${start}-${end})..."
+    blender -b "${file}" -s "${start}" -e "${end}" -o "${output}" -a
+    log "Render complete → ${output}"
+}
+
+cmd_render_mesh() {
+    /opt/clovercreate/scripts/mesh-render.sh "$@"
+}
+
+# =============================================================================
+# STREAMING COMMANDS
+# =============================================================================
+
+cmd_stream_start() {
+    local key=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --key) key="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -n "${key}" ]] && sed -i "s/^STREAM_KEY=.*/STREAM_KEY=\"${key}\"/" "${CONFIG}"
+    sed -i "s/^STREAM_ENABLED=.*/STREAM_ENABLED=true/" "${CONFIG}"
+    /opt/clovercreate/scripts/setup-streaming.sh
+    local ip; ip=$(hostname -I | awk '{print $1}')
+    log "Streaming server started"
+    log "  RTMP: rtmp://${ip}:1935/live"
+    log "  HLS:  http://${ip}:8088/hls/stream.m3u8"
+}
+
+cmd_stream_stop() {
+    sed -i "s/^STREAM_ENABLED=.*/STREAM_ENABLED=false/" "${CONFIG}"
+    systemctl stop nginx 2>/dev/null || true
+    log "Streaming stopped"
+}
+
+# =============================================================================
+# AI COMMANDS
+# =============================================================================
+
+cmd_ai_chat() {
+    local model="${1:-llama3.2}"
+    if ! command -v ollama &>/dev/null; then
+        err "Ollama not installed. Run: clovercreate app install ollama"
+        exit 1
+    fi
+    ollama run "${model}"
+}
+
+cmd_ai_models() {
+    ollama list 2>/dev/null || err "Ollama not running"
+}
+
+cmd_ai_pull() {
+    ollama pull "$1"
+}
+
+cmd_ai_transcribe() {
+    local file="$1"
+    if command -v whisper &>/dev/null; then
+        whisper "${file}" --model medium --output_dir "$(dirname "${file}")"
+    else
+        err "Whisper not installed. Run: pip3 install openai-whisper"
+    fi
+}
+
+# =============================================================================
+# GPU COMMANDS
+# =============================================================================
+
+cmd_gpu_status() {
+    echo "=== GPU Information ==="
+    if command -v nvidia-smi &>/dev/null; then
+        nvidia-smi
+    else
+        lspci | grep -iE "vga|3d|display"
+        echo ""
+        glxinfo 2>/dev/null | grep -E "OpenGL|Device" | head -5 || true
+    fi
+}
+
+# =============================================================================
+# STATUS DASHBOARD
+# =============================================================================
+
+cmd_status() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║          🍀 CloverCreate Status Dashboard            ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+
+    printf "  Hostname:   %s\n" "$(hostname)"
+    printf "  Uptime:     %s\n" "$(uptime -p)"
+    printf "  RAM:        %s / %s\n" "$(free -h | awk '/Mem:/{print $3}')" "$(free -h | awk '/Mem:/{print $2}')"
+    echo ""
+
+    echo "=== GPU ==="
+    if command -v nvidia-smi &>/dev/null; then
+        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader 2>/dev/null || echo "  N/A"
+    else
+        lspci | grep -i vga | sed 's/^/  /'
+    fi
+    echo ""
+
+    echo "=== Projects ==="
+    local pdir="${PROJECTS_DIR:-/home/clover/Projects}"
+    if [[ -d "${pdir}" ]]; then
+        ls -1 "${pdir}" 2>/dev/null | while read -r p; do echo "  📁 ${p}"; done
+    else
+        echo "  None"
+    fi
+    echo ""
+
+    echo "=== Services ==="
+    for svc in lightdm ollama nginx jackd clovercreate; do
+        if systemctl is-active "${svc}" &>/dev/null; then
+            printf "  %-20s ✅ running\n" "${svc}"
+        else
+            printf "  %-20s ⬚  stopped\n" "${svc}"
+        fi
+    done
+    echo ""
+
+    echo "=== Installed Tools ==="
+    for tool in blender gimp inkscape kdenlive obs audacity ardour godot code ollama; do
+        if command -v "${tool}" &>/dev/null; then
+            printf "  %-15s ✅\n" "${tool}"
+        fi
+    done
+    echo ""
+}
+
+# =============================================================================
+# MAIN DISPATCH
+# =============================================================================
+
+CMD="${1:-}"
+SUB="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${CMD}" in
+    project)
+        case "${SUB}" in
+            new)       cmd_project_new "$@" ;;
+            list)      ls -1 "${PROJECTS_DIR:-/home/clover/Projects}" 2>/dev/null ;;
+            open)      xdg-open "${PROJECTS_DIR:-/home/clover/Projects}/$1" 2>/dev/null || echo "${PROJECTS_DIR:-/home/clover/Projects}/$1" ;;
+            templates) cmd_project_templates ;;
+            *)         usage ;;
+        esac ;;
+    render)
+        case "${SUB}" in
+            local)  cmd_render_local "$@" ;;
+            mesh)   cmd_render_mesh "$@" ;;
+            status) jobs -l ;;
+            cancel) kill %1 2>/dev/null || err "No active render" ;;
+            *)      usage ;;
+        esac ;;
+    stream)
+        case "${SUB}" in
+            start)  cmd_stream_start "$@" ;;
+            stop)   cmd_stream_stop ;;
+            status) systemctl status nginx 2>/dev/null ;;
+            *)      usage ;;
+        esac ;;
+    ai)
+        case "${SUB}" in
+            chat)       cmd_ai_chat "$@" ;;
+            models)     cmd_ai_models ;;
+            pull)       cmd_ai_pull "$@" ;;
+            transcribe) cmd_ai_transcribe "$@" ;;
+            *)          usage ;;
+        esac ;;
+    gpu)
+        case "${SUB}" in
+            status)  cmd_gpu_status ;;
+            drivers) /opt/clovercreate/scripts/gpu-setup.sh ;;
+            *)       usage ;;
+        esac ;;
+    app)
+        case "${SUB}" in
+            install)
+                case "$1" in
+                    godot)     /opt/clovercreate/scripts/install-godot.sh ;;
+                    vscode)    /opt/clovercreate/scripts/install-vscode.sh ;;
+                    ollama)    /opt/clovercreate/scripts/setup-ollama.sh ;;
+                    streaming) /opt/clovercreate/scripts/setup-streaming.sh ;;
+                    *)         err "Unknown app: $1" ;;
+                esac ;;
+            *) usage ;;
+        esac ;;
+    mesh)
+        case "${SUB}" in
+            init)   log "Initializing render cluster..."; clovermesh init "$@" 2>/dev/null || err "clovermesh not found" ;;
+            join)   clovermesh join "$@" 2>/dev/null || err "clovermesh not found" ;;
+            status) clovermesh status 2>/dev/null || err "Cluster not initialized" ;;
+            nodes)  clovermesh node list 2>/dev/null || err "Cluster not initialized" ;;
+            *)      usage ;;
+        esac ;;
+    status)  cmd_status ;;
+    config)  cat "${CONFIG}" ;;
+    help|--help|-h|"") usage ;;
+    *)       err "Unknown command: ${CMD}"; usage; exit 1 ;;
+esac
