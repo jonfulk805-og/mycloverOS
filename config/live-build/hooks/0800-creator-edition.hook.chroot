@@ -1,0 +1,497 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS Creator Edition -- Chroot Build Hook
+# Content creation workstation: video, audio, 3D, graphics, AI tools,
+# streaming, plus full CloverMesh node capability.
+# =============================================================================
+set -e
+
+echo "[creator] Running Creator Edition chroot hook..."
+
+# =============================================================================
+# 1. NVIDIA GPU DRIVER (detect + install)
+# =============================================================================
+echo "[creator] Setting up GPU drivers..."
+
+cat > /opt/clovercreate/scripts/gpu-setup.sh <<'GPUSETUP'
+#!/bin/bash
+# Detect and install appropriate GPU drivers at first boot
+set -euo pipefail
+
+if lspci | grep -qi nvidia; then
+    echo "[creator] NVIDIA GPU detected — installing drivers..."
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        nvidia-driver firmware-misc-nonfree \
+        nvidia-cuda-toolkit nvidia-cuda-dev \
+        libnvidia-encode1 libnvidia-decode1 \
+        2>/dev/null || echo "[creator] NVIDIA install needs reboot"
+elif lspci | grep -qi "amd.*radeon\|amd.*navi\|amd.*vega"; then
+    echo "[creator] AMD GPU detected — mesa drivers included"
+fi
+GPUSETUP
+mkdir -p /opt/clovercreate/scripts
+chmod +x /opt/clovercreate/scripts/gpu-setup.sh
+
+# =============================================================================
+# 2. DIRECTORY STRUCTURE
+# =============================================================================
+echo "[creator] Creating Creator directory structure..."
+
+mkdir -p /opt/clovercreate/{config,scripts,templates,plugins}
+mkdir -p /var/lib/clovercreate/{projects,renders,exports,ai-models}
+mkdir -p /var/log/clovercreate
+mkdir -p /etc/myclover/clovercreate.d
+mkdir -p /srv/media/{video,audio,graphics,3d,photos,streams}
+mkdir -p /home/clover/{Desktop,Documents,Downloads,Music,Pictures,Videos,Projects,Renders}
+
+# =============================================================================
+# 3. CREATOR CONFIGURATION
+# =============================================================================
+echo "[creator] Writing Creator configuration..."
+
+cat > /etc/myclover/clovercreate.d/creator.conf <<'CRCONF'
+# =============================================================================
+# CloverOS Creator Edition Configuration
+# =============================================================================
+
+# Identity
+CLOVERCREATE_EDITION="creator"
+CLOVERCREATE_VERSION="1.0.0"
+CLOVERCREATE_NODE_NAME=""
+
+# Workspace
+PROJECTS_DIR="/home/clover/Projects"
+RENDERS_DIR="/home/clover/Renders"
+EXPORTS_DIR="/var/lib/clovercreate/exports"
+AI_MODELS_DIR="/var/lib/clovercreate/ai-models"
+
+# GPU
+GPU_DRIVER="auto"
+GPU_RENDER_OFFLOAD=true
+CUDA_ENABLED=false
+OPENCL_ENABLED=true
+
+# AI Tools
+OLLAMA_ENABLED=true
+OLLAMA_MODELS="llama3.2,codellama,llava"
+STABLE_DIFFUSION_ENABLED=false
+WHISPER_ENABLED=true
+
+# Streaming
+STREAM_RTMP_PORT=1935
+STREAM_HLS_PORT=8088
+STREAM_ENABLED=false
+STREAM_KEY=""
+
+# CloverMesh (node clustering)
+MESH_ENABLED=false
+MESH_ROLE="render-node"
+MESH_RENDER_SHARE=true
+MESH_STORAGE_SHARE=true
+
+# Performance
+REALTIME_AUDIO=true
+JACK_BUFFER_SIZE=256
+JACK_SAMPLE_RATE=48000
+CRCONF
+
+# =============================================================================
+# 4. INSTALL GODOT ENGINE (latest stable AppImage)
+# =============================================================================
+echo "[creator] Installing Godot Engine..."
+
+cat > /opt/clovercreate/scripts/install-godot.sh <<'GODOT'
+#!/bin/bash
+set -euo pipefail
+GODOT_VERSION="4.4.1"
+GODOT_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+DEST="/usr/local/bin/godot"
+
+if [[ ! -f "${DEST}" ]]; then
+    echo "[creator] Downloading Godot ${GODOT_VERSION}..."
+    TMP=$(mktemp -d)
+    cd "${TMP}"
+    wget -q "${GODOT_URL}" -O godot.zip && unzip -q godot.zip && mv Godot_* "${DEST}" && chmod +x "${DEST}"
+    rm -rf "${TMP}"
+    echo "[creator] Godot ${GODOT_VERSION} installed"
+fi
+GODOT
+chmod +x /opt/clovercreate/scripts/install-godot.sh
+
+# =============================================================================
+# 5. INSTALL VS CODE
+# =============================================================================
+echo "[creator] Setting up VS Code installer..."
+
+cat > /opt/clovercreate/scripts/install-vscode.sh <<'VSCODE'
+#!/bin/bash
+set -euo pipefail
+if ! command -v code &>/dev/null; then
+    echo "[creator] Installing VS Code..."
+    wget -qO /tmp/vscode.deb "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64"
+    dpkg -i /tmp/vscode.deb 2>/dev/null || apt-get -f install -y
+    rm -f /tmp/vscode.deb
+    echo "[creator] VS Code installed"
+fi
+VSCODE
+chmod +x /opt/clovercreate/scripts/install-vscode.sh
+
+# =============================================================================
+# 6. OLLAMA AI SETUP
+# =============================================================================
+echo "[creator] Setting up Ollama AI..."
+
+cat > /opt/clovercreate/scripts/setup-ollama.sh <<'OLLAMA'
+#!/bin/bash
+set -euo pipefail
+
+source /etc/myclover/clovercreate.d/creator.conf 2>/dev/null || true
+
+if [[ "${OLLAMA_ENABLED}" != "true" ]]; then
+    echo "[creator] Ollama disabled in config"
+    exit 0
+fi
+
+if ! command -v ollama &>/dev/null; then
+    echo "[creator] Installing Ollama..."
+    curl -fsSL https://ollama.com/install.sh | sh
+fi
+
+# Pull default models
+IFS=',' read -ra MODELS <<< "${OLLAMA_MODELS:-llama3.2}"
+for model in "${MODELS[@]}"; do
+    echo "[creator] Pulling model: ${model}"
+    ollama pull "${model}" 2>/dev/null || true
+done
+OLLAMA
+chmod +x /opt/clovercreate/scripts/setup-ollama.sh
+
+# =============================================================================
+# 7. RTMP STREAMING SERVER (via nginx-rtmp)
+# =============================================================================
+echo "[creator] Configuring streaming server..."
+
+cat > /opt/clovercreate/scripts/setup-streaming.sh <<'STREAM'
+#!/bin/bash
+set -euo pipefail
+
+source /etc/myclover/clovercreate.d/creator.conf 2>/dev/null || true
+
+[[ "${STREAM_ENABLED}" != "true" ]] && exit 0
+
+# nginx-rtmp config
+cat > /etc/nginx/modules-enabled/rtmp.conf <<'RTMP'
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
+        allow publish 127.0.0.0/8;
+        allow publish 10.0.0.0/8;
+        allow publish 172.16.0.0/12;
+        allow publish 192.168.0.0/16;
+        deny publish all;
+
+        application live {
+            live on;
+            record off;
+            
+            # HLS output
+            hls on;
+            hls_path /srv/media/streams/hls;
+            hls_fragment 3;
+            hls_playlist_length 60;
+        }
+        
+        application record {
+            live on;
+            record all;
+            record_path /srv/media/streams/recordings;
+            record_unique on;
+            record_suffix -%Y%m%d-%H%M%S.flv;
+        }
+    }
+}
+RTMP
+
+systemctl restart nginx 2>/dev/null || true
+echo "[creator] Streaming server ready — RTMP: rtmp://$(hostname -I | awk '{print $1}'):1935/live"
+STREAM
+chmod +x /opt/clovercreate/scripts/setup-streaming.sh
+
+# =============================================================================
+# 8. REALTIME AUDIO SETUP (JACK + low latency)
+# =============================================================================
+echo "[creator] Configuring realtime audio..."
+
+# Add clover user to audio group
+usermod -aG audio clover 2>/dev/null || true
+
+# Realtime scheduling limits
+cat > /etc/security/limits.d/99-clovercreate-audio.conf <<'LIMITS'
+@audio   -  rtprio     99
+@audio   -  memlock    unlimited
+@audio   -  nice       -20
+LIMITS
+
+# Low latency kernel parameters
+cat > /etc/sysctl.d/90-clovercreate.conf <<'SYSCTL'
+# Creator Edition — low latency for audio/video
+vm.swappiness = 10
+kernel.sched_latency_ns = 1000000
+kernel.sched_min_granularity_ns = 500000
+kernel.sched_wakeup_granularity_ns = 500000
+fs.inotify.max_user_watches = 524288
+SYSCTL
+
+# =============================================================================
+# 9. RENDER FARM / MESH SUPPORT
+# =============================================================================
+echo "[creator] Setting up CloverMesh render distribution..."
+
+cat > /opt/clovercreate/scripts/mesh-render.sh <<'MESHRENDER'
+#!/bin/bash
+# CloverMesh distributed render — split Blender frames across mesh nodes
+set -euo pipefail
+
+source /etc/myclover/clovercreate.d/creator.conf 2>/dev/null || true
+
+BLEND_FILE="${1:-}"
+START="${2:-1}"
+END="${3:-250}"
+OUTPUT="${4:-/home/clover/Renders/}"
+
+if [[ -z "${BLEND_FILE}" ]]; then
+    echo "Usage: mesh-render.sh <file.blend> [start_frame] [end_frame] [output_dir]"
+    exit 1
+fi
+
+if [[ "${MESH_ENABLED}" != "true" ]]; then
+    echo "[render] Mesh not enabled — rendering locally"
+    blender -b "${BLEND_FILE}" -s "${START}" -e "${END}" -o "${OUTPUT}" -a
+    exit $?
+fi
+
+# Discover mesh render nodes
+NODES=$(clovermesh node list --role render-node --json 2>/dev/null | jq -r '.[].address' 2>/dev/null)
+NODE_COUNT=$(echo "${NODES}" | grep -c . 2>/dev/null || echo 1)
+TOTAL_FRAMES=$((END - START + 1))
+FRAMES_PER_NODE=$(( (TOTAL_FRAMES + NODE_COUNT - 1) / NODE_COUNT ))
+
+echo "[render] Distributing ${TOTAL_FRAMES} frames across ${NODE_COUNT} nodes (${FRAMES_PER_NODE} each)"
+
+CURRENT=${START}
+for node in ${NODES}; do
+    NODE_END=$((CURRENT + FRAMES_PER_NODE - 1))
+    [[ ${NODE_END} -gt ${END} ]] && NODE_END=${END}
+    
+    echo "[render] Node ${node}: frames ${CURRENT}-${NODE_END}"
+    ssh "${node}" "blender -b '${BLEND_FILE}' -s ${CURRENT} -e ${NODE_END} -o '${OUTPUT}' -a" &
+    
+    CURRENT=$((NODE_END + 1))
+    [[ ${CURRENT} -gt ${END} ]] && break
+done
+
+wait
+echo "[render] All frames complete — output: ${OUTPUT}"
+MESHRENDER
+chmod +x /opt/clovercreate/scripts/mesh-render.sh
+
+# =============================================================================
+# 10. CLOVERMESH NODE INTEGRATION
+# =============================================================================
+echo "[creator] Configuring CloverMesh node capability..."
+
+mkdir -p /opt/clovermesh/{config,scripts,keys}
+mkdir -p /etc/myclover/clovermesh.d
+
+cat > /etc/myclover/clovermesh.d/defaults.conf <<'MESHCONF'
+# =============================================================================
+# CloverMesh — Creator Edition Node Configuration
+# =============================================================================
+
+MESH_CLUSTER_NAME=""
+MESH_NODE_NAME=""
+MESH_NODE_ROLE="render-node"
+MESH_TRANSPORT="wireguard"
+MESH_HEARTBEAT_INTERVAL=2000
+MESH_HEARTBEAT_TIMEOUT=6000
+MESH_VIP_ENABLED=true
+MESH_VIP_ADDRESS=""
+
+# Shared resources
+MESH_SHARE_RENDER=true
+MESH_SHARE_STORAGE=true
+MESH_SHARE_GPU=true
+MESH_PROJECT_SYNC="syncthing"
+
+# Replication
+MESH_REPL_METHOD="rsync"
+MESH_REPL_INTERVAL=30
+MESH_REPL_PATHS="/home/clover/Projects,/srv/media"
+
+# Failover
+FAILOVER_AUTO=true
+FAILOVER_PRIORITY=100
+MESHCONF
+
+# =============================================================================
+# 11. OBS STUDIO PROFILES
+# =============================================================================
+echo "[creator] Creating OBS Studio profiles..."
+
+mkdir -p /home/clover/.config/obs-studio/basic/profiles/CloverStream
+cat > /home/clover/.config/obs-studio/basic/profiles/CloverStream/basic.ini <<'OBSPROFILE'
+[General]
+Name=CloverStream
+
+[Video]
+BaseCX=1920
+BaseCY=1080
+OutputCX=1920
+OutputCY=1080
+FPSType=0
+FPSCommon=30
+
+[Output]
+Mode=Advanced
+RecType=Standard
+RecFormat=mkv
+RecEncoder=obs_x264
+RecRB=true
+
+[AdvOut]
+TrackIndex=1
+RecType=Standard
+RecFormat=mkv
+RecEncoder=obs_x264
+FFOutputToFile=true
+OBSPROFILE
+
+# Fix ownership
+chown -R 1000:1000 /home/clover/.config 2>/dev/null || true
+
+# =============================================================================
+# 12. PROJECT TEMPLATES
+# =============================================================================
+echo "[creator] Installing project templates..."
+
+cat > /opt/clovercreate/templates/templates.json <<'TEMPLATES'
+{
+  "version": "1.0.0",
+  "templates": [
+    {"id": "youtube-video", "name": "YouTube Video Project", "type": "video", "tools": ["kdenlive", "obs-studio", "gimp"], "resolution": "1920x1080", "fps": 30},
+    {"id": "podcast", "name": "Podcast Project", "type": "audio", "tools": ["audacity", "ardour"], "sample_rate": 48000, "channels": 2},
+    {"id": "music-production", "name": "Music Production", "type": "audio", "tools": ["ardour", "lmms"], "sample_rate": 48000, "channels": 2},
+    {"id": "3d-animation", "name": "3D Animation", "type": "3d", "tools": ["blender", "godot"], "resolution": "1920x1080", "fps": 24},
+    {"id": "game-dev", "name": "Game Development", "type": "game", "tools": ["godot", "blender", "gimp", "audacity"], "engine": "godot"},
+    {"id": "graphic-design", "name": "Graphic Design", "type": "graphics", "tools": ["gimp", "inkscape", "krita"], "format": "png"},
+    {"id": "photo-editing", "name": "Photography Workflow", "type": "photo", "tools": ["darktable", "gimp"], "format": "raw+jpg"},
+    {"id": "livestream", "name": "Live Stream Setup", "type": "stream", "tools": ["obs-studio", "nginx-rtmp"], "resolution": "1920x1080", "fps": 30},
+    {"id": "web-dev", "name": "Web Development", "type": "code", "tools": ["code", "nodejs", "git"], "framework": "react"},
+    {"id": "ai-art", "name": "AI Art Generator", "type": "ai", "tools": ["stable-diffusion", "gimp", "ollama"], "model": "sdxl"}
+  ]
+}
+TEMPLATES
+
+# =============================================================================
+# 13. DESKTOP CUSTOMIZATION
+# =============================================================================
+echo "[creator] Customizing desktop environment..."
+
+# XFCE panel with creator shortcuts
+mkdir -p /etc/skel/.config/xfce4/panel
+mkdir -p /etc/skel/Desktop
+
+# Desktop shortcuts
+for app in blender gimp inkscape kdenlive obs audacity; do
+    if [[ -f "/usr/share/applications/${app}.desktop" ]]; then
+        cp "/usr/share/applications/${app}.desktop" /etc/skel/Desktop/ 2>/dev/null || true
+    fi
+done
+
+# Set dark theme
+mkdir -p /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml
+cat > /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml <<'XFCECONF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="ThemeName" type="string" value="Adwaita-dark"/>
+    <property name="IconThemeName" type="string" value="Adwaita"/>
+  </property>
+</channel>
+XFCECONF
+
+# =============================================================================
+# 14. CONSOLE BANNER
+# =============================================================================
+echo "[creator] Setting console banner..."
+
+cat > /etc/issue <<'BANNER'
+
+  ╔══════════════════════════════════════════════════════╗
+  ║             🍀 CloverOS Creator Edition              ║
+  ║          Create. Stream. Publish. Profit.            ║
+  ║                                                      ║
+  ║  Desktop:   startx  (or auto-login)                  ║
+  ║  CLI:       clovercreate help                        ║
+  ║  Streaming: clovercreate stream start                ║
+  ║  AI:        clovercreate ai chat                     ║
+  ╚══════════════════════════════════════════════════════╝
+
+BANNER
+
+# =============================================================================
+# 15. CLOVERCREATE SYSTEMD SERVICE
+# =============================================================================
+echo "[creator] Creating CloverCreate service..."
+
+cat > /etc/systemd/system/clovercreate.service <<'SERVICE'
+[Unit]
+Description=CloverOS Creator Edition Services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/clovercreate/scripts/clovercreate-startup.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat > /opt/clovercreate/scripts/clovercreate-startup.sh <<'STARTUP'
+#!/bin/bash
+echo "[clovercreate] Starting Creator services..."
+
+source /etc/myclover/clovercreate.d/creator.conf 2>/dev/null || true
+
+# GPU driver check
+/opt/clovercreate/scripts/gpu-setup.sh 2>/dev/null || true
+
+# Start Ollama if enabled
+if [[ "${OLLAMA_ENABLED:-true}" == "true" ]]; then
+    systemctl start ollama 2>/dev/null || true
+fi
+
+# Start streaming if enabled
+if [[ "${STREAM_ENABLED:-false}" == "true" ]]; then
+    /opt/clovercreate/scripts/setup-streaming.sh 2>/dev/null || true
+fi
+
+# Start JACK audio server
+if [[ "${REALTIME_AUDIO:-true}" == "true" ]]; then
+    su - clover -c "jackd -d alsa -r ${JACK_SAMPLE_RATE:-48000} -p ${JACK_BUFFER_SIZE:-256}" &
+fi
+
+echo "[clovercreate] Creator Edition ready"
+STARTUP
+chmod +x /opt/clovercreate/scripts/clovercreate-startup.sh
+
+systemctl enable clovercreate.service 2>/dev/null || true
+systemctl enable lightdm.service 2>/dev/null || true
+
+echo "[creator] Creator Edition chroot hook complete"
