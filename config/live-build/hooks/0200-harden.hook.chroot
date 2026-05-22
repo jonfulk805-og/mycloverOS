@@ -369,6 +369,33 @@ DOCKER
 echo "[harden] Docker daemon hardened"
 
 # =============================================================================
+# 6.1. CONTAINERD SNAPSHOTTER — LIVE-BOOT COMPATIBILITY
+# =============================================================================
+echo "[harden] Configuring containerd for live-boot (native snapshotter)..."
+
+# Docker's daemon.json sets storage-driver to "vfs" (above), but containerd has
+# its own snapshotter config that defaults to "overlayfs". The Linux kernel blocks
+# nested overlay-on-overlay mounts, so containers fail at runtime with:
+#   "failed to mount ... fstype: overlay ... err: invalid argument"
+#
+# Fix: set containerd's snapshotter to "native" (full-copy, equivalent to vfs).
+# After myclover-install copies to disk (ext4), both are switched back:
+#   Docker → overlay2,  containerd → overlayfs
+
+mkdir -p /etc/containerd
+
+# Generate the full default config from the installed containerd binary,
+# then patch the snapshotter. This avoids hand-writing TOML that may drift
+# across containerd versions.
+containerd config default > /etc/containerd/config.toml
+
+# containerd may emit single-quoted or double-quoted TOML depending on version
+sed -i "s/snapshotter = 'overlayfs'/snapshotter = 'native'/"   /etc/containerd/config.toml
+sed -i 's/snapshotter = "overlayfs"/snapshotter = "native"/'   /etc/containerd/config.toml
+
+echo "[harden] Containerd snapshotter set to native (live-boot safe)"
+
+# =============================================================================
 # 7. FILE PERMISSIONS & CLEANUP
 # =============================================================================
 echo "[harden] Tightening file permissions..."

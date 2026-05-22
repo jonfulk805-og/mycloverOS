@@ -189,6 +189,13 @@ if [[ -f "${INSTALL_ROOT}/etc/docker/daemon.json" ]]; then
 DJEOF
 fi
 
+# Switch containerd from native (live-boot workaround) to overlayfs (proper for ext4 disk)
+if [[ -f "${INSTALL_ROOT}/etc/containerd/config.toml" ]]; then
+    log "Resetting containerd snapshotter to overlayfs for disk..."
+    sed -i "s/snapshotter = 'native'/snapshotter = 'overlayfs'/"   "${INSTALL_ROOT}/etc/containerd/config.toml"
+    sed -i 's/snapshotter = "native"/snapshotter = "overlayfs"/'   "${INSTALL_ROOT}/etc/containerd/config.toml"
+fi
+
 # --- Mark for first-boot provisioning (BEFORE unmount) -----------------------
 log "Setting first-boot provisioning flag..."
 mkdir -p "${INSTALL_ROOT}/var/lib/cloverstack"
