@@ -1,0 +1,842 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS Industrial Edition -- Chroot Build Hook
+# SCADA/ICS/OT platform: MQTT, Modbus, OPC-UA, Node-RED, LoRa gateway,
+# time-series DB, Grafana dashboards, hardened OT security, CloverMesh HA.
+# =============================================================================
+set -e
+
+echo "[industrial] Running Industrial Edition chroot hook..."
+
+# =============================================================================
+# 1. DIRECTORY STRUCTURE
+# =============================================================================
+echo "[industrial] Creating Industrial directory structure..."
+
+mkdir -p /opt/cloverfactory/{config,scripts,flows,dashboards,protocols,certs}
+mkdir -p /var/lib/cloverfactory/{data,timeseries,backups,firmware,logs}
+mkdir -p /var/log/cloverfactory
+mkdir -p /etc/myclover/cloverfactory.d
+mkdir -p /srv/industrial/{scada,hmi,historian,reports}
+
+# =============================================================================
+# 2. INDUSTRIAL CONFIGURATION
+# =============================================================================
+echo "[industrial] Writing Industrial configuration..."
+
+cat > /etc/myclover/cloverfactory.d/industrial.conf <<'INDCONF'
+# =============================================================================
+# CloverOS Industrial Edition Configuration
+# =============================================================================
+
+# Identity
+CLOVERFACTORY_EDITION="industrial"
+CLOVERFACTORY_VERSION="1.0.0"
+CLOVERFACTORY_NODE_NAME=""
+CLOVERFACTORY_WEB_PORT=8443
+CLOVERFACTORY_SITE_NAME=""
+CLOVERFACTORY_SITE_ID=""
+
+# MQTT Broker
+MQTT_ENABLED=true
+MQTT_PORT=1883
+MQTT_WS_PORT=9001
+MQTT_TLS_PORT=8883
+MQTT_AUTH=true
+MQTT_ACL=true
+MQTT_BRIDGE_ENABLED=false
+MQTT_BRIDGE_REMOTE=""
+
+# Modbus
+MODBUS_TCP_ENABLED=true
+MODBUS_TCP_PORT=502
+MODBUS_RTU_ENABLED=false
+MODBUS_RTU_PORT="/dev/ttyUSB0"
+MODBUS_RTU_BAUD=9600
+
+# OPC-UA Server
+OPCUA_ENABLED=true
+OPCUA_PORT=4840
+OPCUA_SECURITY="SignAndEncrypt"
+OPCUA_CERT_DIR="/opt/cloverfactory/certs"
+
+# Node-RED
+NODERED_ENABLED=true
+NODERED_PORT=1880
+NODERED_FLOW_DIR="/opt/cloverfactory/flows"
+NODERED_AUTH=true
+
+# Time-Series Database
+TSDB_ENGINE="influxdb"
+TSDB_PORT=8086
+TSDB_RETENTION="365d"
+TSDB_BUCKET="factory"
+
+# Grafana
+GRAFANA_ENABLED=true
+GRAFANA_PORT=3000
+GRAFANA_AUTH=true
+
+# LoRa Gateway
+LORA_ENABLED=false
+LORA_FREQUENCY="US915"
+LORA_GATEWAY_ID=""
+LORA_SERVER="localhost"
+
+# CAN Bus
+CANBUS_ENABLED=false
+CANBUS_INTERFACE="can0"
+CANBUS_BITRATE=500000
+
+# Network Segmentation
+OT_NETWORK="192.168.100.0/24"
+IT_NETWORK="192.168.1.0/24"
+DMZ_NETWORK="172.16.0.0/24"
+OT_IT_FIREWALL=true
+OT_INTERNET_BLOCKED=true
+
+# Historian
+HISTORIAN_ENABLED=true
+HISTORIAN_RETENTION="5y"
+HISTORIAN_COMPRESSION=true
+
+# Alarms / Alerts
+ALARM_ENABLED=true
+ALARM_EMAIL=""
+ALARM_WEBHOOK=""
+ALARM_MQTT_TOPIC="cloverfactory/alarms"
+
+# CloverMesh
+MESH_ENABLED=false
+MESH_ROLE="factory-primary"
+MESH_PEER=""
+MESH_VIP=""
+MESH_SYNC_DATA=true
+MESH_SYNC_FLOWS=true
+
+# Safety
+WATCHDOG_ENABLED=true
+WATCHDOG_TIMEOUT=60
+SAFE_MODE_ON_FAILURE=true
+AUDIT_LOG=true
+INDCONF
+
+# =============================================================================
+# 3. MOSQUITTO MQTT BROKER (industrial-grade)
+# =============================================================================
+echo "[industrial] Configuring MQTT broker..."
+
+cat > /etc/mosquitto/mosquitto.conf <<'MQTTCONF'
+# CloverFactory MQTT Broker
+pid_file /run/mosquitto/mosquitto.pid
+
+# Listeners
+listener 1883
+protocol mqtt
+
+listener 9001
+protocol websockets
+
+# TLS listener (uncomment after cert setup)
+# listener 8883
+# cafile /opt/cloverfactory/certs/ca.crt
+# certfile /opt/cloverfactory/certs/server.crt
+# keyfile /opt/cloverfactory/certs/server.key
+# require_certificate false
+
+# Authentication
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+
+# ACL
+acl_file /etc/mosquitto/acl
+
+# Persistence
+persistence true
+persistence_location /var/lib/mosquitto/
+autosave_interval 300
+
+# Logging
+log_dest file /var/log/cloverfactory/mqtt.log
+log_type all
+connection_messages true
+
+# Limits
+max_connections 1000
+max_inflight_messages 200
+max_queued_messages 5000
+message_size_limit 268435456
+
+# Bridge to cloud (optional)
+# connection cloud-bridge
+# address mqtt.myclover.tech:8883
+# topic factory/# out 1
+# topic commands/# in 1
+MQTTCONF
+
+# Default MQTT credentials
+touch /etc/mosquitto/passwd
+mosquitto_passwd -b /etc/mosquitto/passwd admin cloveradmin 2>/dev/null || true
+mosquitto_passwd -b /etc/mosquitto/passwd factory factory123 2>/dev/null || true
+
+# ACL
+cat > /etc/mosquitto/acl <<'MQTTACL'
+# CloverFactory MQTT ACL
+user admin
+topic readwrite #
+
+user factory
+topic readwrite factory/#
+topic readwrite sensors/#
+topic readwrite actuators/#
+topic readwrite alarms/#
+topic read cloverfactory/#
+MQTTACL
+
+# =============================================================================
+# 4. INSTALL NODE-RED
+# =============================================================================
+echo "[industrial] Installing Node-RED..."
+
+cat > /opt/cloverfactory/scripts/install-nodered.sh <<'NODERED'
+#!/bin/bash
+set -euo pipefail
+
+if ! command -v node-red &>/dev/null; then
+    echo "[industrial] Installing Node-RED..."
+    npm install -g --unsafe-perm node-red
+
+    # Install industrial palettes
+    cd /opt/cloverfactory/flows
+    npm init -y 2>/dev/null || true
+    npm install \
+        node-red-contrib-modbus \
+        node-red-contrib-opcua \
+        node-red-contrib-mqtt-broker \
+        node-red-contrib-influxdb \
+        node-red-contrib-s7 \
+        node-red-contrib-cip-ethernet-ip \
+        node-red-contrib-bacnet \
+        node-red-dashboard \
+        node-red-node-serialport \
+        2>/dev/null || echo "[industrial] Some palettes failed (install later)"
+
+    echo "[industrial] Node-RED installed with industrial palettes"
+fi
+NODERED
+chmod +x /opt/cloverfactory/scripts/install-nodered.sh
+
+# Node-RED systemd service
+cat > /etc/systemd/system/nodered.service <<'NRSVC'
+[Unit]
+Description=Node-RED Industrial Automation
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/cloverfactory/flows
+ExecStart=/usr/bin/node-red --userDir /opt/cloverfactory/flows -p 1880
+Restart=on-failure
+RestartSec=10
+Environment="NODE_RED_ENABLE_SAFE_MODE=false"
+
+[Install]
+WantedBy=multi-user.target
+NRSVC
+
+# =============================================================================
+# 5. INSTALL INFLUXDB (time-series)
+# =============================================================================
+echo "[industrial] Setting up InfluxDB installer..."
+
+cat > /opt/cloverfactory/scripts/install-influxdb.sh <<'INFLUX'
+#!/bin/bash
+set -euo pipefail
+
+if ! command -v influxd &>/dev/null; then
+    echo "[industrial] Installing InfluxDB..."
+    wget -qO /tmp/influxdb2.deb "https://dl.influxdata.com/influxdb/releases/influxdb2_2.7.5-1_amd64.deb"
+    dpkg -i /tmp/influxdb2.deb 2>/dev/null || apt-get -f install -y
+    rm -f /tmp/influxdb2.deb
+    echo "[industrial] InfluxDB installed"
+fi
+INFLUX
+chmod +x /opt/cloverfactory/scripts/install-influxdb.sh
+
+# =============================================================================
+# 6. INSTALL GRAFANA
+# =============================================================================
+echo "[industrial] Setting up Grafana installer..."
+
+cat > /opt/cloverfactory/scripts/install-grafana.sh <<'GRAFANA'
+#!/bin/bash
+set -euo pipefail
+
+if ! command -v grafana-server &>/dev/null; then
+    echo "[industrial] Installing Grafana..."
+    wget -qO /tmp/grafana.deb "https://dl.grafana.com/oss/release/grafana_11.4.0_amd64.deb"
+    dpkg -i /tmp/grafana.deb 2>/dev/null || apt-get -f install -y
+    rm -f /tmp/grafana.deb
+
+    # Industrial dashboard provisioning
+    mkdir -p /etc/grafana/provisioning/dashboards
+    cat > /etc/grafana/provisioning/dashboards/cloverfactory.yaml <<'GDASH'
+apiVersion: 1
+providers:
+  - name: CloverFactory
+    orgId: 1
+    folder: Industrial
+    type: file
+    options:
+      path: /opt/cloverfactory/dashboards
+      foldersFromFilesStructure: true
+GDASH
+    echo "[industrial] Grafana installed"
+fi
+GRAFANA
+chmod +x /opt/cloverfactory/scripts/install-grafana.sh
+
+# Pre-built industrial dashboards
+cat > /opt/cloverfactory/dashboards/factory-overview.json <<'DASHBOARD'
+{
+  "dashboard": {
+    "title": "🏭 Factory Overview",
+    "tags": ["cloverfactory", "overview"],
+    "panels": [
+      {"title": "Active Sensors", "type": "stat", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}},
+      {"title": "Active Alarms", "type": "stat", "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}},
+      {"title": "MQTT Messages/sec", "type": "gauge", "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0}},
+      {"title": "System Health", "type": "stat", "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0}},
+      {"title": "Sensor Data (24h)", "type": "timeseries", "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4}},
+      {"title": "Alarm History", "type": "table", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12}},
+      {"title": "Node Health (Mesh)", "type": "table", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12}}
+    ]
+  }
+}
+DASHBOARD
+
+# =============================================================================
+# 7. MODBUS GATEWAY SCRIPT
+# =============================================================================
+echo "[industrial] Setting up Modbus gateway..."
+
+cat > /opt/cloverfactory/scripts/modbus-gateway.py <<'MODBUS'
+#!/usr/bin/env python3
+"""CloverFactory Modbus TCP/RTU → MQTT Gateway.
+
+Polls Modbus devices and publishes values to MQTT.
+Config: /etc/myclover/cloverfactory.d/modbus-devices.json
+"""
+import json
+import time
+import os
+import sys
+
+def main():
+    config_path = "/etc/myclover/cloverfactory.d/modbus-devices.json"
+    if not os.path.exists(config_path):
+        print("[modbus] No device config found. Create: " + config_path)
+        print("[modbus] Example:")
+        print(json.dumps({
+            "devices": [
+                {
+                    "name": "temperature-sensor-1",
+                    "host": "192.168.100.10",
+                    "port": 502,
+                    "unit_id": 1,
+                    "registers": [
+                        {"address": 0, "count": 1, "type": "holding", "name": "temperature", "scale": 0.1, "unit": "°C"},
+                        {"address": 1, "count": 1, "type": "holding", "name": "humidity", "scale": 0.1, "unit": "%"}
+                    ],
+                    "poll_interval": 5,
+                    "mqtt_topic": "sensors/temp-sensor-1"
+                }
+            ]
+        }, indent=2))
+        return
+
+    try:
+        from pymodbus.client import ModbusTcpClient
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        print("[modbus] Installing dependencies...")
+        os.system("pip3 install pymodbus paho-mqtt")
+        from pymodbus.client import ModbusTcpClient
+        import paho.mqtt.client as mqtt
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    # MQTT connection
+    mqttc = mqtt.Client(client_id="cloverfactory-modbus")
+    mqttc.username_pw_set("factory", "factory123")
+    mqttc.connect("localhost", 1883, 60)
+    mqttc.loop_start()
+
+    print(f"[modbus] Polling {len(config['devices'])} devices...")
+
+    while True:
+        for device in config["devices"]:
+            try:
+                client = ModbusTcpClient(device["host"], port=device.get("port", 502))
+                client.connect()
+                for reg in device["registers"]:
+                    if reg["type"] == "holding":
+                        result = client.read_holding_registers(reg["address"], reg["count"], slave=device.get("unit_id", 1))
+                    elif reg["type"] == "input":
+                        result = client.read_input_registers(reg["address"], reg["count"], slave=device.get("unit_id", 1))
+                    else:
+                        continue
+
+                    if not result.isError():
+                        value = result.registers[0] * reg.get("scale", 1)
+                        topic = f"{device['mqtt_topic']}/{reg['name']}"
+                        payload = json.dumps({"value": value, "unit": reg.get("unit", ""), "ts": int(time.time())})
+                        mqttc.publish(topic, payload, qos=1)
+                client.close()
+            except Exception as e:
+                print(f"[modbus] Error polling {device['name']}: {e}")
+
+        time.sleep(min(d.get("poll_interval", 5) for d in config["devices"]))
+
+if __name__ == "__main__":
+    main()
+MODBUS
+chmod +x /opt/cloverfactory/scripts/modbus-gateway.py
+
+# Modbus gateway systemd service
+cat > /etc/systemd/system/cloverfactory-modbus.service <<'MBSVC'
+[Unit]
+Description=CloverFactory Modbus Gateway
+After=mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/cloverfactory/scripts/modbus-gateway.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+MBSVC
+
+# =============================================================================
+# 8. OT NETWORK SEGMENTATION
+# =============================================================================
+echo "[industrial] Configuring OT/IT network segmentation..."
+
+cat > /opt/cloverfactory/scripts/setup-network-segmentation.sh <<'NETSEG'
+#!/bin/bash
+# CloverFactory OT/IT Network Segmentation
+set -euo pipefail
+
+source /etc/myclover/cloverfactory.d/industrial.conf 2>/dev/null || true
+
+[[ "${OT_IT_FIREWALL}" != "true" ]] && exit 0
+
+# nftables rules for OT/IT isolation
+cat > /opt/cloverfactory/config/ot-firewall.nft <<'OTNFT'
+#!/usr/sbin/nft -f
+
+table inet cloverfactory_ot {
+    chain forward {
+        type filter hook forward priority 5; policy accept;
+
+        # Block OT → Internet (unless explicitly allowed)
+        ip saddr 192.168.100.0/24 oifname "eth0" drop
+
+        # Allow OT → IT only for specific services
+        ip saddr 192.168.100.0/24 ip daddr 192.168.1.0/24 tcp dport { 1883, 8086, 3000, 1880 } accept
+        ip saddr 192.168.100.0/24 ip daddr 192.168.1.0/24 drop
+
+        # Allow IT → OT only for management
+        ip saddr 192.168.1.0/24 ip daddr 192.168.100.0/24 tcp dport { 22, 502, 4840, 8443 } accept
+        ip saddr 192.168.1.0/24 ip daddr 192.168.100.0/24 drop
+    }
+}
+OTNFT
+
+nft -f /opt/cloverfactory/config/ot-firewall.nft 2>/dev/null || echo "[industrial] OT firewall rules applied at next boot"
+echo "[industrial] OT/IT network segmentation configured"
+NETSEG
+chmod +x /opt/cloverfactory/scripts/setup-network-segmentation.sh
+
+# =============================================================================
+# 9. ALARM ENGINE
+# =============================================================================
+echo "[industrial] Setting up alarm engine..."
+
+cat > /opt/cloverfactory/scripts/alarm-engine.py <<'ALARM'
+#!/usr/bin/env python3
+"""CloverFactory Alarm Engine.
+
+Subscribes to MQTT topics, evaluates rules, triggers alarms.
+Config: /etc/myclover/cloverfactory.d/alarm-rules.json
+"""
+import json
+import time
+import os
+
+def main():
+    rules_path = "/etc/myclover/cloverfactory.d/alarm-rules.json"
+    if not os.path.exists(rules_path):
+        print("[alarm] No alarm rules found. Create: " + rules_path)
+        print("[alarm] Example:")
+        print(json.dumps({
+            "rules": [
+                {
+                    "name": "High Temperature",
+                    "topic": "sensors/temp-sensor-1/temperature",
+                    "condition": "value > 80",
+                    "severity": "critical",
+                    "message": "Temperature exceeded 80°C on sensor 1",
+                    "actions": ["mqtt", "email", "webhook"]
+                }
+            ]
+        }, indent=2))
+        return
+
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        os.system("pip3 install paho-mqtt")
+        import paho.mqtt.client as mqtt
+
+    with open(rules_path) as f:
+        config = json.load(f)
+
+    active_alarms = {}
+
+    def on_message(client, userdata, msg):
+        try:
+            payload = json.loads(msg.payload.decode())
+            value = payload.get("value", 0)
+
+            for rule in config["rules"]:
+                if mqtt.topic_matches_sub(rule["topic"], msg.topic):
+                    condition = rule["condition"].replace("value", str(value))
+                    if eval(condition):
+                        alarm_key = rule["name"]
+                        if alarm_key not in active_alarms:
+                            active_alarms[alarm_key] = time.time()
+                            alarm_payload = {
+                                "name": rule["name"],
+                                "severity": rule["severity"],
+                                "message": rule["message"],
+                                "value": value,
+                                "topic": msg.topic,
+                                "ts": int(time.time())
+                            }
+                            client.publish("cloverfactory/alarms", json.dumps(alarm_payload), qos=1)
+                            print(f"[ALARM] {rule['severity'].upper()}: {rule['message']} (value={value})")
+                    else:
+                        active_alarms.pop(rule["name"], None)
+        except Exception as e:
+            print(f"[alarm] Error processing message: {e}")
+
+    mqttc = mqtt.Client(client_id="cloverfactory-alarm-engine")
+    mqttc.username_pw_set("admin", "cloveradmin")
+    mqttc.on_message = on_message
+    mqttc.connect("localhost", 1883, 60)
+
+    # Subscribe to all sensor topics
+    topics = set()
+    for rule in config["rules"]:
+        topics.add(rule["topic"])
+    for topic in topics:
+        mqttc.subscribe(topic, qos=1)
+
+    print(f"[alarm] Monitoring {len(config['rules'])} alarm rules...")
+    mqttc.loop_forever()
+
+if __name__ == "__main__":
+    main()
+ALARM
+chmod +x /opt/cloverfactory/scripts/alarm-engine.py
+
+# Alarm engine systemd service
+cat > /etc/systemd/system/cloverfactory-alarm.service <<'ALSVC'
+[Unit]
+Description=CloverFactory Alarm Engine
+After=mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/cloverfactory/scripts/alarm-engine.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+ALSVC
+
+# =============================================================================
+# 10. CLOVERMESH HA (INDUSTRIAL CLUSTERING)
+# =============================================================================
+echo "[industrial] Configuring CloverMesh HA..."
+
+mkdir -p /opt/clovermesh/{config,scripts,keys}
+mkdir -p /etc/myclover/clovermesh.d
+
+cat > /etc/myclover/clovermesh.d/defaults.conf <<'MESHCONF'
+# =============================================================================
+# CloverMesh — Industrial Edition HA Configuration
+# =============================================================================
+
+MESH_CLUSTER_NAME=""
+MESH_NODE_NAME=""
+MESH_NODE_ROLE="factory-primary"
+MESH_TRANSPORT="wireguard"
+MESH_HEARTBEAT_INTERVAL=500
+MESH_HEARTBEAT_TIMEOUT=1500
+MESH_VIP_ENABLED=true
+MESH_VIP_ADDRESS=""
+
+# Data replication
+MESH_SYNC_DATA=true
+MESH_SYNC_FLOWS=true
+MESH_SYNC_ALARMS=true
+MESH_SYNC_HISTORIAN=true
+
+# Industrial-grade failover (sub-second)
+FAILOVER_AUTO=true
+FAILOVER_PREEMPT=false
+FAILOVER_PRIORITY=100
+FAILOVER_MAX_TIME_MS=1000
+MESHCONF
+
+# =============================================================================
+# 11. WATCHDOG SERVICE
+# =============================================================================
+echo "[industrial] Configuring watchdog..."
+
+cat > /etc/watchdog.conf <<'WDCONF'
+# CloverFactory Industrial Watchdog
+watchdog-device = /dev/watchdog
+watchdog-timeout = 60
+interval = 10
+realtime = yes
+priority = 1
+
+# Monitor critical services
+pidfile = /run/mosquitto/mosquitto.pid
+pidfile = /run/nodered.pid
+
+# Test network connectivity
+ping = 127.0.0.1
+interface = eth0
+
+# Test disk space
+file = /var/log/cloverfactory
+change = 86400
+
+# Max load
+max-load-1 = 24
+max-load-5 = 18
+min-memory = 1
+WDCONF
+
+systemctl enable watchdog 2>/dev/null || true
+
+# =============================================================================
+# 12. AUDIT LOGGING (ICS compliance)
+# =============================================================================
+echo "[industrial] Configuring audit logging..."
+
+cat > /etc/audit/rules.d/cloverfactory.rules <<'AUDITRULES'
+# CloverFactory Industrial Audit Rules (IEC 62443 / NIST 800-82)
+
+# Monitor config changes
+-w /etc/myclover/cloverfactory.d/ -p wa -k cloverfactory_config
+-w /etc/mosquitto/ -p wa -k mqtt_config
+-w /opt/cloverfactory/flows/ -p wa -k nodered_flows
+
+# Monitor network changes
+-w /etc/nftables.conf -p wa -k firewall
+-w /etc/network/ -p wa -k network
+
+# Monitor user/auth changes
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+
+# Monitor privileged commands
+-a always,exit -F arch=b64 -S execve -F euid=0 -k privileged_cmd
+
+# Monitor Modbus/OPC-UA ports
+-a always,exit -F arch=b64 -S connect -F a2=2 -k network_connect
+AUDITRULES
+
+systemctl enable auditd 2>/dev/null || true
+
+# =============================================================================
+# 13. COCKPIT WEB UI (INDUSTRIAL SKIN)
+# =============================================================================
+echo "[industrial] Customizing web management UI..."
+
+mkdir -p /etc/cockpit
+cat > /etc/cockpit/cockpit.conf <<'COCKPITCONF'
+[WebService]
+Origins = https://localhost:8443 wss://localhost:8443
+LoginTitle = CloverFactory
+MaxStartups = 10
+AllowUnencrypted = false
+
+[Session]
+IdleTimeout = 30
+
+[Log]
+Fatal = criticals warnings
+COCKPITCONF
+
+mkdir -p /usr/share/cockpit/branding/cloverfactory
+cat > /usr/share/cockpit/branding/cloverfactory/branding.css <<'BRAND'
+body.login-pf { background-color: #0a1a0a; }
+.login-pf .container { background: rgba(10, 26, 10, 0.9); }
+#brand { font-size: 1.8em; color: #ffa500; font-weight: bold; }
+#brand::before { content: "🏭 "; }
+#badge { display: none; }
+BRAND
+
+cat > /usr/share/cockpit/branding/cloverfactory/default.html <<'BRANDHTML'
+<style>@import "branding.css";</style>
+<span id="brand">CloverFactory</span>
+BRANDHTML
+
+ln -sf /usr/share/cockpit/branding/cloverfactory /usr/share/cockpit/branding/default 2>/dev/null || true
+
+mkdir -p /etc/systemd/system/cockpit.socket.d
+cat > /etc/systemd/system/cockpit.socket.d/listen.conf <<'LISTEN'
+[Socket]
+ListenStream=
+ListenStream=8443
+LISTEN
+
+# =============================================================================
+# 14. KERNEL TUNING (real-time / deterministic)
+# =============================================================================
+echo "[industrial] Applying industrial kernel tuning..."
+
+cat > /etc/sysctl.d/90-cloverfactory.conf <<'SYSCTL'
+# CloverFactory Industrial — Deterministic / Low-Latency
+
+# Network
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_timestamps = 1
+
+# Real-time scheduling
+kernel.sched_rt_runtime_us = 950000
+
+# Watchdog
+kernel.nmi_watchdog = 1
+kernel.soft_watchdog = 1
+
+# File limits
+fs.file-max = 1048576
+fs.inotify.max_user_watches = 524288
+
+# VM tuning
+vm.swappiness = 10
+SYSCTL
+
+# =============================================================================
+# 15. CONSOLE BANNER
+# =============================================================================
+echo "[industrial] Setting console banner..."
+
+cat > /etc/issue <<'BANNER'
+
+  ╔══════════════════════════════════════════════════════╗
+  ║            🏭 CloverFactory Industrial               ║
+  ║        Monitor. Automate. Protect. Scale.            ║
+  ║                                                      ║
+  ║  Web UI:      https://<ip>:8443                      ║
+  ║  CLI:         cloverfactory help                     ║
+  ║  Node-RED:    http://<ip>:1880                       ║
+  ║  Grafana:     http://<ip>:3000                       ║
+  ║  MQTT:        mqtt://<ip>:1883                       ║
+  ╚══════════════════════════════════════════════════════╝
+
+BANNER
+
+# =============================================================================
+# 16. CLOVERFACTORY SYSTEMD SERVICE
+# =============================================================================
+echo "[industrial] Creating CloverFactory service..."
+
+cat > /etc/systemd/system/cloverfactory.service <<'SERVICE'
+[Unit]
+Description=CloverFactory Industrial Platform
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/cloverfactory/scripts/cloverfactory-startup.sh
+ExecStop=/opt/cloverfactory/scripts/cloverfactory-shutdown.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat > /opt/cloverfactory/scripts/cloverfactory-startup.sh <<'STARTUP'
+#!/bin/bash
+echo "[cloverfactory] Starting CloverFactory Industrial Platform..."
+
+source /etc/myclover/cloverfactory.d/industrial.conf 2>/dev/null || true
+
+# Start MQTT broker
+systemctl start mosquitto 2>/dev/null || true
+
+# Install + start Node-RED
+/opt/cloverfactory/scripts/install-nodered.sh 2>/dev/null || true
+systemctl start nodered 2>/dev/null || true
+
+# Install + start InfluxDB
+/opt/cloverfactory/scripts/install-influxdb.sh 2>/dev/null || true
+systemctl start influxdb 2>/dev/null || true
+
+# Install + start Grafana
+/opt/cloverfactory/scripts/install-grafana.sh 2>/dev/null || true
+systemctl start grafana-server 2>/dev/null || true
+
+# Start Modbus gateway (if configured)
+if [[ -f /etc/myclover/cloverfactory.d/modbus-devices.json ]]; then
+    systemctl start cloverfactory-modbus 2>/dev/null || true
+fi
+
+# Start alarm engine (if configured)
+if [[ -f /etc/myclover/cloverfactory.d/alarm-rules.json ]]; then
+    systemctl start cloverfactory-alarm 2>/dev/null || true
+fi
+
+# OT network segmentation
+/opt/cloverfactory/scripts/setup-network-segmentation.sh 2>/dev/null || true
+
+# Start Cockpit web UI
+systemctl start cockpit.socket 2>/dev/null || true
+
+echo "[cloverfactory] CloverFactory ready"
+STARTUP
+chmod +x /opt/cloverfactory/scripts/cloverfactory-startup.sh
+
+cat > /opt/cloverfactory/scripts/cloverfactory-shutdown.sh <<'SHUTDOWN'
+#!/bin/bash
+echo "[cloverfactory] Shutting down CloverFactory..."
+echo "[cloverfactory] Shutdown complete"
+SHUTDOWN
+chmod +x /opt/cloverfactory/scripts/cloverfactory-shutdown.sh
+
+systemctl enable cloverfactory.service 2>/dev/null || true
+systemctl enable mosquitto.service 2>/dev/null || true
+
+echo "[industrial] Industrial Edition chroot hook complete"
+echo "[industrial] MQTT, Node-RED, InfluxDB, Grafana, Modbus, OT segmentation configured"
