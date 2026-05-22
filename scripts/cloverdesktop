@@ -368,7 +368,7 @@ cmd_swap() {
     fi
 
     # Find the currently running desktop for this instance
-    for f in "${RUNNING_DIR}"/*-"${instance}.json" 2>/dev/null; do
+    for f in "${RUNNING_DIR}"/*-"${instance}.json"; do
         if [[ -f "$f" ]]; then
             local old_id
             old_id=$(python3 -c "import json; print(json.load(open('$f'))['desktop_id'])" 2>/dev/null)
