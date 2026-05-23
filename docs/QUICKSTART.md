@@ -550,6 +550,7 @@ ollama run <model>                     # Interactive chat with a model
 
 ## Next Steps
 
+- **New to SSH & networking?** — Read [SETUP-COMPANION.md](SETUP-COMPANION.md) for a beginner-friendly guide to PuTTY, Angry IP Scanner, and browser setup
 - **Explore Portainer** — manage containers, view logs, deploy stacks
 - **Enable more modules** — see `cs-status` for the full list
 - **Set up CloverMesh** — connect multiple CloverOS nodes via WireGuard
