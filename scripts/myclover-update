@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
 # myclover-update -- Update mycloverOS + CloverStack modules
+# Usage:
+#   sudo myclover-update              Full system update (packages, containers,
+#                                     models, CloverMarket, scripts)
+#   sudo myclover-update --scripts    Update only mycloverOS scripts from GitHub
+#   sudo myclover-update --all        Same as no flags (full update)
 # =============================================================================
 set -euo pipefail
 
@@ -8,17 +13,157 @@ LOG="/var/log/cloverstack/update.log"
 mkdir -p "$(dirname "${LOG}")"
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "${LOG}"; }
+err() { echo "[myclover-update] ERROR: $*" >&2; }
 
 if [[ $EUID -ne 0 ]]; then
     echo "Must run as root: sudo myclover-update"
     exit 1
 fi
 
+# --- Configuration -----------------------------------------------------------
+GITHUB_REPO="jonfulk805-og/mycloverOS"
+GITHUB_BRANCH="main"
+GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}"
+
+# Scripts that live at /usr/local/bin (same list as build.sh)
+CORE_SCRIPTS=(
+    cloverstack-setup
+    myclover-update
+    myclover-install
+    myclover-provision
+)
+
+# Optional scripts — only update if already installed on this system
+OPTIONAL_SCRIPTS=(
+    clovermarket-ctl
+    clovermarket
+    cloverapp-picker
+    clovervisor
+    clovernas-edition
+    clovernas
+    clovercreate
+    cloverwall
+    cloverfactory
+    cloverdeploy
+    clovermesh
+    cloverdesktop
+    cloverstrike
+    clovervr
+)
+
+# =============================================================================
+# Script updater — pulls latest scripts from GitHub
+# =============================================================================
+update_scripts() {
+    log "Updating mycloverOS scripts from GitHub..."
+    local updated=0
+    local failed=0
+
+    # Core scripts — always update
+    for script in "${CORE_SCRIPTS[@]}"; do
+        log "  Fetching: ${script}"
+        if curl -fsSL "${GITHUB_RAW}/scripts/${script}" -o "/tmp/${script}.new" 2>/dev/null; then
+            # Compare with current version
+            if ! cmp -s "/tmp/${script}.new" "/usr/local/bin/${script}" 2>/dev/null; then
+                cp "/tmp/${script}.new" "/usr/local/bin/${script}"
+                chmod +x "/usr/local/bin/${script}"
+                log "  ✅ Updated: ${script}"
+                ((updated++))
+            else
+                log "  ── Already up to date: ${script}"
+            fi
+            rm -f "/tmp/${script}.new"
+        else
+            err "  Failed to fetch: ${script}"
+            rm -f "/tmp/${script}.new"
+            ((failed++))
+        fi
+    done
+
+    # Optional scripts — only update if already installed
+    for script in "${OPTIONAL_SCRIPTS[@]}"; do
+        if [[ -f "/usr/local/bin/${script}" ]]; then
+            log "  Fetching: ${script}"
+            if curl -fsSL "${GITHUB_RAW}/scripts/${script}" -o "/tmp/${script}.new" 2>/dev/null; then
+                if ! cmp -s "/tmp/${script}.new" "/usr/local/bin/${script}" 2>/dev/null; then
+                    cp "/tmp/${script}.new" "/usr/local/bin/${script}"
+                    chmod +x "/usr/local/bin/${script}"
+                    log "  ✅ Updated: ${script}"
+                    ((updated++))
+                else
+                    log "  ── Already up to date: ${script}"
+                fi
+                rm -f "/tmp/${script}.new"
+            else
+                log "  ⚠  Not in repo (skipped): ${script}"
+                rm -f "/tmp/${script}.new"
+            fi
+        fi
+    done
+
+    # Ensure cloverstack-ctl symlink exists
+    if [[ ! -L /usr/local/bin/cloverstack-ctl ]]; then
+        ln -sf /usr/local/bin/cloverstack-setup /usr/local/bin/cloverstack-ctl
+        log "  Created symlink: cloverstack-ctl → cloverstack-setup"
+    fi
+
+    log "Scripts update complete: ${updated} updated, ${failed} failed"
+
+    # If myclover-update itself was updated, notify the user
+    if [[ ${updated} -gt 0 ]]; then
+        log "ℹ  If myclover-update was updated, re-run for the latest version."
+    fi
+}
+
+# =============================================================================
+# Parse arguments
+# =============================================================================
+MODE="${1:-all}"
+
+case "${MODE}" in
+    --scripts|-s)
+        echo ""
+        echo "============================================"
+        echo "  mycloverOS Script Update"
+        echo "============================================"
+        echo ""
+        update_scripts
+        echo ""
+        log "=== Script Update Complete ==="
+        exit 0
+        ;;
+    --all|--full|"all")
+        ;; # fall through to full update below
+    --help|-h)
+        cat <<EOF
+Usage: sudo myclover-update [option]
+
+Options:
+  (none), --all     Full system update (packages, containers, models, scripts)
+  --scripts, -s     Update only mycloverOS scripts from GitHub
+  --help, -h        Show this help
+
+EOF
+        exit 0
+        ;;
+    *)
+        err "Unknown option: ${MODE}"
+        echo "Usage: sudo myclover-update [--all | --scripts | --help]"
+        exit 1
+        ;;
+esac
+
+# =============================================================================
+# Full system update
+# =============================================================================
 echo ""
 echo "============================================"
 echo "  mycloverOS System Update"
 echo "============================================"
 echo ""
+
+# --- Scripts from GitHub -----------------------------------------------------
+update_scripts
 
 # --- System packages ---------------------------------------------------------
 log "Updating system packages..."
@@ -51,7 +196,7 @@ fi
 
 # --- Restart updated containers ----------------------------------------------
 log "Recreating containers with updated images..."
-for compose_dir in /opt/cloverstack/*/; do
+for compose_dir in /opt/cloverstack/modules/*/; do
     if [[ -f "${compose_dir}/docker-compose.yml" ]]; then
         log "  Updating: $(basename "${compose_dir}")"
         cd "${compose_dir}" && docker compose up -d 2>/dev/null || true
