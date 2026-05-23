@@ -84,7 +84,7 @@ cmd_status() {
             enabled="no"
         fi
 
-        if docker compose -f "${mod_dir}/docker-compose.yml" ps --status running 2>/dev/null | grep -q "running"; then
+        if docker compose -f "${mod_dir}/docker-compose.yml" ps --status running -q 2>/dev/null | grep -q .; then
             running="yes"
         else
             running="no"
@@ -175,7 +175,7 @@ cmd_info() {
         if [[ -f "${MODULES_DIR}/${mod}.enabled" ]]; then echo "  Status: ENABLED"; else echo "  Status: DISABLED"; fi
         local compose="${CLOVERSTACK_ROOT}/modules/${mod}/docker-compose.yml"
         if [[ -f "${compose}" ]]; then
-            local running=$(docker compose -f "${compose}" ps --status running 2>/dev/null | tail -n +2 | wc -l)
+            local running=$(docker compose -f "${compose}" ps --status running -q 2>/dev/null | wc -l)
             echo "  Running containers: ${running}"
         fi
         echo ""
