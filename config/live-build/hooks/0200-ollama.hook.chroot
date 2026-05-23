@@ -12,9 +12,10 @@ apt-get install -y zstd
 
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Create systemd service (if not created by installer)
-if [[ ! -f /etc/systemd/system/ollama.service ]]; then
-    cat > /etc/systemd/system/ollama.service <<'EOF'
+# Always write the systemd service file — the Ollama installer creates one
+# bound to 127.0.0.1, but CloverStack needs 0.0.0.0 so Docker containers
+# (Open WebUI / Chappie) can reach Ollama via host.docker.internal.
+cat > /etc/systemd/system/ollama.service <<'EOF'
 [Unit]
 Description=Ollama AI Engine
 After=network-online.target
@@ -32,7 +33,6 @@ Environment="OLLAMA_HOST=0.0.0.0"
 [Install]
 WantedBy=default.target
 EOF
-fi
 
 systemctl enable ollama 2>/dev/null || true
 
