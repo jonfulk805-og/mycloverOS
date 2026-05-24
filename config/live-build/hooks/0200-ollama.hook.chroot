@@ -36,4 +36,10 @@ EOF
 
 systemctl enable ollama 2>/dev/null || true
 
+# Open firewall for Ollama API so Docker containers (CloverStack modules)
+# can reach the host Ollama service from bridge networks.
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 11434/tcp comment 'Ollama API - CloverStack' 2>/dev/null || true
+fi
+
 echo "[mycloverOS] Ollama installed"
