@@ -506,7 +506,7 @@ systemctl enable virtlogd 2>/dev/null || true
 virsh net-autostart default --disable 2>/dev/null || true
 
 # Libvirt config for live migration
-mkdir -p /etc/libvirt
+mkdir -p /etc/libvirt/libvirtd.conf.d
 cat > /etc/libvirt/libvirtd.conf.d/clovervisor.conf <<'LVCONF' 2>/dev/null || true
 # CloverVisor libvirt overrides
 listen_tls = 1
