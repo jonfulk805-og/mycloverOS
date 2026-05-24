@@ -48,6 +48,7 @@ CONF
 
 # --- Firewall rules for desktop ports ---
 # Ports 6901-6920 for desktop containers
+mkdir -p /etc/myclover/firewall-rules.d
 cat >> /etc/myclover/firewall-rules.d/cloverdesktop.rules 2>/dev/null <<'EOF' || true
 # CloverDesktop — containerized desktop ports
 ufw allow 6901:6920/tcp comment "CloverDesktop web access"
