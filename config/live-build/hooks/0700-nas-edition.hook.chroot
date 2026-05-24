@@ -486,6 +486,11 @@ LISTEN
 # =============================================================================
 echo "[nas] Configuring UPS monitoring (NUT)..."
 
+apt-get install -y --no-install-recommends nut-server nut-client \
+    || echo "[nas] WARNING: NUT install failed (UPS monitoring disabled)"
+
+mkdir -p /etc/nut
+
 cat > /etc/nut/nut.conf <<'NUT'
 MODE=netserver
 NUT
