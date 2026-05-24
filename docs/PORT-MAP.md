@@ -27,7 +27,9 @@
 | 8092 | Netmaker UI | CloverMesh |
 | 8093 | Meshtastic Web | CloverMesh Radio |
 | 8094 | Owncast | StreamServer |
+| 8095 | Chatbox Team Proxy | Chatbox Team |
 | 8096 | Jellyfin | CloverMedia |
+| 8097 | AnythingLLM | AnythingLLM |
 | 4533 | Navidrome (Music) | CloverMedia |
 | 9000 | Graylog | SentryLog |
 

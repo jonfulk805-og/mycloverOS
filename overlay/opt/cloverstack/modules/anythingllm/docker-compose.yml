@@ -1,0 +1,50 @@
+# CloverStack Module: AnythingLLM — AI chat with document workspaces & RAG
+# Full-featured AI productivity platform: chat, document upload, RAG,
+# AI agents, web scraping, multi-user, embeddable widgets.
+# Connects to local Ollama for fully offline private AI.
+#
+# Upstream: https://github.com/Mintplex-Labs/anything-llm
+# License: MIT
+services:
+  anythingllm:
+    image: mintplexlabs/anythingllm:latest
+    container_name: clover-anythingllm
+    restart: unless-stopped
+    environment:
+      STORAGE_DIR: /app/server/storage
+      # Ollama connection (local AI on CloverOS)
+      LLM_PROVIDER: ollama
+      OLLAMA_BASE_PATH: "http://host.docker.internal:11434"
+      OLLAMA_MODEL_PREF: ${ANYTHINGLLM_MODEL:-phi3:mini}
+      # Embedding (use Ollama for local embeddings too)
+      EMBEDDING_ENGINE: ollama
+      EMBEDDING_MODEL_PREF: ${ANYTHINGLLM_EMBED_MODEL:-nomic-embed-text}
+      # Vector store (built-in LanceDB — zero config)
+      VECTOR_DB: lancedb
+      # Auth
+      AUTH_TOKEN: ${ANYTHINGLLM_AUTH:-}
+      JWT_SECRET: ${ANYTHINGLLM_JWT_SECRET:-cloverstack-anythingllm-jwt}
+      # Web scraping
+      ENABLE_HTTPS: "false"
+    ports: ["8097:3001"]
+    volumes:
+      - anythingllm-storage:/app/server/storage
+      - anythingllm-hotdir:/app/collector/hotdir
+      - anythingllm-outputs:/app/collector/outputs
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [cloverstack]
+    cap_add:
+      - SYS_ADMIN  # Required for web scraping (Puppeteer)
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.anythingllm.rule=PathPrefix(`/anythingllm`)"
+      - "traefik.http.services.anythingllm.loadbalancer.server.port=3001"
+      - "cloverstack.module=anythingllm"
+
+volumes:
+  anythingllm-storage:
+  anythingllm-hotdir:
+  anythingllm-outputs:
+
+networks:
+  cloverstack: { external: true }

@@ -1,0 +1,22 @@
+{
+  "name": "anythingllm",
+  "display_name": "AnythingLLM",
+  "description": "AI chat with document workspaces, RAG, agents, and multi-user support — browser-based, Docker-native",
+  "version": "1.0.0",
+  "category": "ai",
+  "ports": {
+    "web": 8097
+  },
+  "url_path": "/anythingllm",
+  "upstream": "AnythingLLM by Mintplex Labs",
+  "upstream_url": "https://github.com/Mintplex-Labs/anything-llm",
+  "upstream_license": "MIT",
+  "min_ram_mb": 2048,
+  "min_disk_gb": 10,
+  "default_enabled": false,
+  "gpu_recommended": true,
+  "notes": "Docker-native alternative to Chatbox desktop. Full web UI with document workspaces, RAG, and AI agents. Drop files in the hotdir volume for automatic ingestion.",
+  "services": [
+    "anythingllm"
+  ]
+}
