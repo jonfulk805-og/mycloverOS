@@ -221,7 +221,7 @@ if [[ -f "${SCRIPT_DIR}/scripts/clovervisor" ]]; then
 fi
 
 # Edition-specific CLI scripts
-for script in clovernas-edition clovercreate cloverwall cloverfactory; do
+for script in clovernas-edition clovercreate cloverwall cloverfactory cloverdesktop; do
     if [[ -f "${SCRIPT_DIR}/scripts/${script}" ]]; then
         cp "${SCRIPT_DIR}/scripts/${script}" config/includes.chroot/usr/local/bin/
         chmod +x config/includes.chroot/usr/local/bin/${script}
