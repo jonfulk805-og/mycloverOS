@@ -414,6 +414,71 @@ PAGE_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
+
+    <!-- Desktop Environment -->
+    <div class="card">
+      <h2><span class="icon">&#x1f5a5;&#xFE0F;</span> Desktop Environment</h2>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+        Choose a containerized desktop — accessible via browser. No native GUI overhead.
+      </p>
+      <div class="checkbox-group">
+        <label class="checkbox-item" style="grid-column: span 2; border-color: var(--clover);">
+          <input type="radio" name="desktop" value="auto" checked style="accent-color: var(--clover);">
+          <span>&#x1f340; Auto-detect (recommended)</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="kde" style="accent-color: var(--clover);">
+          <span>KDE Plasma</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="gnome" style="accent-color: var(--clover);">
+          <span>GNOME</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="xfce" style="accent-color: var(--clover);">
+          <span>XFCE (light)</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="cinnamon" style="accent-color: var(--clover);">
+          <span>Cinnamon</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="mate" style="accent-color: var(--clover);">
+          <span>MATE</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="i3" style="accent-color: var(--clover);">
+          <span>i3 (tiling)</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="radio" name="desktop" value="none" style="accent-color: var(--clover);">
+          <span>None (headless)</span>
+        </label>
+      </div>
+      <div class="hint" style="margin-top: 0.5rem; font-size: 0.78rem; color: var(--text-muted);">
+        Desktop runs as a Docker container via Portainer. Switch anytime: <code>cloverstack-ctl desktop switch &lt;id&gt;</code>
+      </div>
+    </div>
+
+    <!-- AI Model Selection -->
+    <div class="card">
+      <h2><span class="icon">&#x1f9e0;</span> AI Model</h2>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+        Select the local LLM for Chappie AI and other CloverStack AI features.
+      </p>
+      <div class="field">
+        <select id="ai_model">
+          <option value="auto">&#x1f340; Auto-detect (best for your hardware)</option>
+          <option value="phi3:mini">Phi-3 Mini (3.8B) — Fast, lightweight, 4GB+ RAM</option>
+          <option value="dolphin-x1">Dolphin-X1-8B — Uncensored, capable, 8GB+ RAM</option>
+          <option value="llama3.1:8b">Llama 3.1 8B — Meta flagship, 8GB+ RAM</option>
+        </select>
+        <div class="hint">
+          Dolphin-X1 is a Llama 3.1 fine-tune with no content restrictions. Auto-detect picks the best quant for your RAM.
+        </div>
+      </div>
+    </div>
+
     <!-- Services Status -->
     <div class="card">
       <h2><span class="icon">&#x1f6e0;&#xFE0F;</span> Service Status</h2>
@@ -498,6 +563,8 @@ async function applySetup() {
   if (password.length < 6) return showAlert('Password must be at least 6 characters', 'error');
 
   const modules = Array.from(document.querySelectorAll('input[name="module"]:checked')).map(cb => cb.value);
+  const desktop = document.querySelector('input[name="desktop"]:checked')?.value || 'auto';
+  const ai_model = document.getElementById('ai_model').value;
 
   const btn = document.getElementById('apply-btn');
   const progress = document.getElementById('progress');
@@ -509,7 +576,7 @@ async function applySetup() {
     const r = await fetch('/api/setup', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ hostname, timezone, username, password, modules })
+      body: JSON.stringify({ hostname, timezone, username, password, modules, desktop, ai_model })
     });
     const data = await r.json();
     if (data.success) {
@@ -662,6 +729,54 @@ def apply_setup(data):
     except Exception as e:
         errors.append(f"SSH: {e}")
 
+    # 5a. Configure desktop environment
+    desktop = data.get("desktop", "auto")
+    try:
+        import re as _re
+        distro_conf = f"{CLOVERSTACK_CONFIG}/distro.conf"
+        if os.path.exists(distro_conf):
+            with open(distro_conf, "r") as f:
+                conf = f.read()
+            if "DEFAULT_DESKTOP=" in conf:
+                conf = _re.sub(r'DEFAULT_DESKTOP=.*', f'DEFAULT_DESKTOP="{desktop}"', conf)
+            else:
+                conf += f'\nDEFAULT_DESKTOP="{desktop}"\n'
+            with open(distro_conf, "w") as f:
+                f.write(conf)
+        print(f"[Setup] Desktop set to: {desktop}", flush=True)
+        if desktop != "none":
+            subprocess.Popen(
+                ["/usr/local/bin/cloverdesktop", "deploy", desktop if desktop != "auto" else "xfce"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            print(f"[Setup] Desktop deployment started: {desktop}", flush=True)
+    except Exception as e:
+        errors.append(f"Desktop: {e}")
+
+    # 5b. Configure AI model
+    ai_model = data.get("ai_model", "phi3:mini")
+    try:
+        distro_conf = f"{CLOVERSTACK_CONFIG}/distro.conf"
+        if os.path.exists(distro_conf):
+            with open(distro_conf, "r") as f:
+                conf = f.read()
+            if "DEFAULT_AI_MODEL=" in conf:
+                conf = _re.sub(r'DEFAULT_AI_MODEL=.*', f'DEFAULT_AI_MODEL="{ai_model}"', conf)
+            else:
+                conf += f'\nDEFAULT_AI_MODEL="{ai_model}"\n'
+            with open(distro_conf, "w") as f:
+                f.write(conf)
+        print(f"[Setup] AI model set to: {ai_model}", flush=True)
+        if ai_model == "dolphin-x1":
+            subprocess.Popen(["ollama", "pull", "hf.co/dphn/Dolphin-X1-8B-GGUF:Q4_K_M"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        elif ai_model != "auto":
+            subprocess.Popen(["ollama", "pull", ai_model],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[Setup] AI model pull started", flush=True)
+    except Exception as e:
+        errors.append(f"AI Model: {e}")
+
     # 6. Mark setup as complete
     try:
         os.makedirs(os.path.dirname(SETUP_DONE_FLAG), exist_ok=True)
@@ -670,6 +785,8 @@ def apply_setup(data):
             f.write(f"Hostname: {hostname}\n")
             f.write(f"User: {username}\n")
             f.write(f"Modules: {', '.join(modules)}\n")
+            f.write(f"Desktop: {data.get('desktop', 'auto')}\n")
+            f.write(f"AI Model: {data.get('ai_model', 'auto')}\n")
         print("[Setup] Setup marked as complete", flush=True)
     except Exception as e:
         errors.append(f"Flag: {e}")
