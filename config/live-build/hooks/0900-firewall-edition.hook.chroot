@@ -17,6 +17,12 @@ mkdir -p /opt/cloverwall/{config,scripts,rules,certs,geoip}
 mkdir -p /var/lib/cloverwall/{state,logs,captures,reports}
 mkdir -p /var/log/cloverwall
 mkdir -p /etc/myclover/cloverwall.d
+mkdir -p /etc/suricata
+mkdir -p /etc/cockpit
+mkdir -p /etc/systemd/system/cockpit.socket.d
+mkdir -p /etc/myclover/clovermesh.d
+mkdir -p /etc/cron.d
+mkdir -p /etc/dhcp
 
 # =============================================================================
 # 2. FIREWALL CONFIGURATION
