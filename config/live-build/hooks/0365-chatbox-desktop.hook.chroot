@@ -1,0 +1,147 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Install Chatbox AI Desktop Client
+# https://chatboxai.app  |  https://github.com/chatboxai/chatbox
+# License: GPLv3 (Community Edition)
+#
+# Chatbox is a cross-platform AI chat client that supports Ollama, OpenAI,
+# Claude, Gemini, and Azure. Data stays local. Pairs with CloverOS's built-in
+# Ollama engine for fully offline private AI conversations.
+#
+# Only installed on Desktop / Field Laptop editions (detects X11 packages).
+# =============================================================================
+set -e
+
+# --- Skip on headless/server editions ---
+if ! dpkg -l xorg 2>/dev/null | grep -q '^ii'; then
+    echo "[chatbox] Skipping -- no X11 detected (headless edition)"
+    exit 0
+fi
+
+echo "[chatbox] Installing Chatbox AI desktop client..."
+
+CHATBOX_DIR="/opt/chatbox"
+CHATBOX_BIN="/usr/local/bin/chatbox"
+DESKTOP_FILE="/usr/share/applications/chatbox.desktop"
+ICON_DIR="/usr/share/icons/hicolor/256x256/apps"
+
+mkdir -p "${CHATBOX_DIR}" "${ICON_DIR}"
+
+# --- Download latest AppImage from GitHub releases ---
+# Fetch the latest release tag from the GitHub API
+LATEST_URL="https://api.github.com/repos/chatboxai/chatbox/releases/latest"
+echo "[chatbox] Fetching latest release info..."
+
+if command -v python3 &>/dev/null; then
+    # Use Python to parse JSON (jq may not be available in chroot)
+    DOWNLOAD_URL=$(curl -fsSL "${LATEST_URL}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for asset in data.get('assets', []):
+    name = asset.get('name', '')
+    if 'linux' in name.lower() and name.endswith('.AppImage') and 'arm' not in name.lower():
+        print(asset['browser_download_url'])
+        break
+")
+else
+    # Fallback: grep for AppImage URL
+    DOWNLOAD_URL=$(curl -fsSL "${LATEST_URL}" | grep -oP '"browser_download_url":\s*"\K[^"]*linux[^"]*\.AppImage' | grep -iv arm | head -1)
+fi
+
+if [[ -z "${DOWNLOAD_URL}" ]]; then
+    echo "[chatbox] WARNING: Could not find AppImage download URL. Skipping."
+    echo "[chatbox] Install manually: https://chatboxai.app/en#download"
+    exit 0
+fi
+
+echo "[chatbox] Downloading: ${DOWNLOAD_URL}"
+curl -fsSL -o "${CHATBOX_DIR}/Chatbox.AppImage" "${DOWNLOAD_URL}" || {
+    echo "[chatbox] WARNING: Download failed. Chatbox can be installed later."
+    echo "[chatbox] Download from: https://chatboxai.app/en#download"
+    exit 0
+}
+
+chmod +x "${CHATBOX_DIR}/Chatbox.AppImage"
+
+# --- Create wrapper script ---
+cat > "${CHATBOX_BIN}" <<'WRAPPER'
+#!/bin/bash
+# Chatbox AI launcher — connects to local Ollama by default
+exec /opt/chatbox/Chatbox.AppImage "$@"
+WRAPPER
+chmod +x "${CHATBOX_BIN}"
+
+# --- Create desktop launcher ---
+cat > "${DESKTOP_FILE}" <<'DESKTOP'
+[Desktop Entry]
+Name=Chatbox AI
+Comment=AI Chat Client — Ollama, ChatGPT, Claude, Gemini
+Exec=/opt/chatbox/Chatbox.AppImage %U
+Icon=chatbox
+Terminal=false
+Type=Application
+Categories=Utility;Chat;ArtificialIntelligence;
+Keywords=ai;chat;ollama;gpt;claude;llm;
+StartupNotify=true
+StartupWMClass=chatbox
+MimeType=x-scheme-handler/chatbox;
+DESKTOP
+
+# --- Extract icon from AppImage (if possible) ---
+# AppImages contain .DirIcon; try to extract it
+cd /tmp
+if "${CHATBOX_DIR}/Chatbox.AppImage" --appimage-extract '*.png' 2>/dev/null; then
+    # Look for a suitable icon
+    ICON_FILE=$(find squashfs-root/ -name "*.png" -size +1k 2>/dev/null | head -1)
+    if [[ -n "${ICON_FILE}" ]]; then
+        cp "${ICON_FILE}" "${ICON_DIR}/chatbox.png"
+        echo "[chatbox] Icon extracted."
+    fi
+    rm -rf squashfs-root/
+fi
+cd /
+
+# --- Ollama connection config hint ---
+cat > "${CHATBOX_DIR}/README.md" <<'README'
+# Chatbox AI on CloverOS
+
+Chatbox AI is pre-installed on CloverOS Desktop editions.
+
+## Quick Start
+
+1. Launch from the application menu or run: `chatbox`
+2. Go to Settings → AI Model Provider
+3. Select **Ollama** as the provider
+4. Set API Host to: `http://localhost:11434`
+5. Your local models will appear automatically
+
+## Features
+
+- Chat with local AI models via Ollama (fully offline)
+- Support for cloud providers: OpenAI, Claude, Gemini, Azure
+- Local data storage — conversations never leave your device
+- Knowledge Base — RAG over your private documents
+- Prompt library, markdown/LaTeX, code highlighting
+- Team collaboration (share API resources)
+
+## Updating
+
+```bash
+# Check for updates
+myclover-update --check
+
+# Or download manually
+curl -fsSL -o /opt/chatbox/Chatbox.AppImage \
+  "https://github.com/chatboxai/chatbox/releases/latest/download/Chatbox-linux-x86_64.AppImage"
+chmod +x /opt/chatbox/Chatbox.AppImage
+```
+
+## Links
+
+- Website: https://chatboxai.app
+- GitHub: https://github.com/chatboxai/chatbox
+- License: GPLv3 (Community Edition)
+README
+
+echo "[chatbox] Chatbox AI installed at ${CHATBOX_DIR}/Chatbox.AppImage"
+echo "[chatbox] Desktop launcher created. Launch from menu or run: chatbox"

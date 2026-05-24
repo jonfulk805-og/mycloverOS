@@ -43,7 +43,9 @@ Modules:
   netmon              Network monitoring (Zabbix)
   sentrylog           Log management (Graylog + Wazuh)
   myclover-vault      Password manager (Vaultwarden)
-  chappie             AI assistant (Ollama)
+  chappie             AI assistant (Ollama + Open WebUI)
+  chatbox-team        Shared AI API proxy (Chatbox Team)
+  anythingllm         AI chat + document workspaces (AnythingLLM)
   clovermarket        App marketplace (CloverMarket)
   clovermedia         Smart TV + streaming + DJ
   cloversign          Digital signage
@@ -51,7 +53,7 @@ Modules:
   clovermine          Crypto mining
   cloverpos           Point of sale
   cloverdesign        AI design studio
-  cloverbot           AI support chatbot
+  cloverbot           AI support chatbot (LibreChat)
   cloverdrone         UAV control
   clovermesh          Distributed mesh
   clovermesh-radio    LoRa mesh comms
@@ -193,7 +195,9 @@ cmd_list() {
     echo "  netmon            Network monitoring (Zabbix)"
     echo "  sentrylog         Log management (Graylog + Wazuh)"
     echo "  myclover-vault    Password manager (Vaultwarden)"
-    echo "  chappie           AI assistant (Ollama)"
+    echo "  chappie           AI assistant (Ollama + Open WebUI)"
+    echo "  chatbox-team      Shared AI API proxy (Chatbox Team)"
+    echo "  anythingllm       AI chat + document workspaces (AnythingLLM)"
     echo "  clovermedia       Smart TV + streaming + DJ"
     echo "  cloversign        Digital signage"
     echo "  cloverguard       Web proxy + content filter"

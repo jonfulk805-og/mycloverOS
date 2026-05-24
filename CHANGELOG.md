@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Chatbox AI + AnythingLLM Integration
+- **Chatbox AI Desktop** — Native AppImage pre-installed on Desktop & Field Laptop editions
+  - Build hook `0365-chatbox-desktop.hook.chroot` auto-downloads latest from GitHub Releases
+  - Desktop launcher (.desktop file) with icon extraction
+  - Connects to local Ollama at `localhost:11434` for offline AI chat
+  - Supports Ollama, OpenAI, Claude, Gemini, Azure providers
+  - Local data storage, Knowledge Base (RAG), prompt library
+  - GPLv3 Community Edition — credit: [chatboxai/chatbox](https://github.com/chatboxai/chatbox)
+- **Chatbox Team Proxy** — Docker module for shared API access (port 8095)
+  - Share a single OpenAI/Anthropic API key across team without exposing it
+  - Team members just set the proxy address in Chatbox settings
+  - Based on `bensdocker/chatbox-team` Docker image
+- **AnythingLLM** — Docker module for browser-based AI chat + RAG (port 8097)
+  - Document workspaces — upload PDFs/docs and chat with them
+  - Built-in RAG with LanceDB (zero-config vector store)
+  - AI agents, web scraping, multi-user auth
+  - Hot directory for automatic file ingestion
+  - MIT licensed — credit: [Mintplex-Labs/anything-llm](https://github.com/Mintplex-Labs/anything-llm)
+- Updated port map with new modules (8095, 8097)
+- Updated `cloverstack-ctl` module list and help text
+- Added `docs/CHATBOX-AI.md` — full integration documentation with comparison matrix
+
 ### Added — CloverNAS + CloverDeploy + CloverMesh
 - **CloverNAS** — Full TrueNAS-grade ZFS storage management platform
   - OpenZFS integration: pools, RAIDZ (1/2/3), mirrors, snapshots, clones, encryption, compression

@@ -1,0 +1,22 @@
+{
+  "name": "chatbox-team",
+  "display_name": "Chatbox Team Proxy",
+  "description": "Shared API proxy for Chatbox desktop clients — share Ollama/OpenAI access across team without exposing keys",
+  "version": "1.0.0",
+  "category": "ai",
+  "ports": {
+    "proxy": 8095
+  },
+  "url_path": "/chatbox-api",
+  "upstream": "Chatbox Team Sharing (Caddy proxy)",
+  "upstream_url": "https://github.com/chatboxai/chatbox/tree/main/team-sharing",
+  "upstream_license": "GPLv3",
+  "min_ram_mb": 128,
+  "min_disk_gb": 1,
+  "default_enabled": false,
+  "gpu_recommended": false,
+  "notes": "Most useful when sharing a cloud API key (OpenAI/Anthropic) across team. For local Ollama, Chatbox can connect directly.",
+  "services": [
+    "chatbox-team"
+  ]
+}

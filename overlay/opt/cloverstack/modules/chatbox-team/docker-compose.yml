@@ -1,0 +1,32 @@
+# CloverStack Module: Chatbox Team — shared AI API proxy
+# Allows team members to use Chatbox desktop without individual API keys.
+# Proxies requests to Ollama (local) or OpenAI (cloud) through a single
+# shared endpoint with Caddy TLS termination.
+#
+# Upstream: https://github.com/chatboxai/chatbox/tree/main/team-sharing
+# License: GPLv3
+services:
+  chatbox-team:
+    image: bensdocker/chatbox-team
+    container_name: chatbox-team-proxy
+    restart: unless-stopped
+    environment:
+      # For Ollama (local AI — default on CloverOS):
+      # Team members set API Host in Chatbox to http://<cloverOS-ip>:8095
+      # and select Ollama as provider (no KEY needed).
+      #
+      # For OpenAI (cloud AI — optional):
+      # Set KEY below and team members connect without needing the API key.
+      KEY: ${CHATBOX_OPENAI_KEY:-sk-not-configured}
+      # HOST: ${CHATBOX_DOMAIN:-}  # Set for HTTPS (requires domain name)
+    ports: ["8095:80"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [cloverstack]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chatbox-team.rule=PathPrefix(`/chatbox-api`)"
+      - "traefik.http.services.chatbox-team.loadbalancer.server.port=80"
+      - "cloverstack.module=chatbox-team"
+
+networks:
+  cloverstack: { external: true }
