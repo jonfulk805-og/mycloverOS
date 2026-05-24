@@ -18,6 +18,12 @@ mkdir -p /var/lib/cloverfactory/{data,timeseries,backups,firmware,logs}
 mkdir -p /var/log/cloverfactory
 mkdir -p /etc/myclover/cloverfactory.d
 mkdir -p /srv/industrial/{scada,hmi,historian,reports}
+mkdir -p /etc/mosquitto
+mkdir -p /etc/grafana/provisioning/dashboards
+mkdir -p /etc/audit/rules.d
+mkdir -p /etc/myclover/clovermesh.d
+mkdir -p /var/lib/mosquitto
+mkdir -p /run/mosquitto
 
 # =============================================================================
 # 2. INDUSTRIAL CONFIGURATION
