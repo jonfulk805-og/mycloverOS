@@ -13,6 +13,8 @@ echo "[creator] Running Creator Edition chroot hook..."
 # =============================================================================
 echo "[creator] Setting up GPU drivers..."
 
+mkdir -p /opt/clovercreate/{config,scripts,templates,plugins}
+
 cat > /opt/clovercreate/scripts/gpu-setup.sh <<'GPUSETUP'
 #!/bin/bash
 # Detect and install appropriate GPU drivers at first boot
