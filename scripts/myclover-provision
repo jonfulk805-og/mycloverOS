@@ -93,14 +93,18 @@ fi
 # --- Install Portainer -------------------------------------------------------
 log "Deploying Portainer..."
 docker volume create portainer_data 2>/dev/null || true
-docker run -d \
+if PORTAINER_OUT=$(docker run -d \
     --name portainer \
     --restart=always \
     -p 9443:9443 \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v portainer_data:/data \
     --network cloverstack \
-    portainer/portainer-ce:latest 2>/dev/null || log "Portainer already running"
+    portainer/portainer-ce:latest 2>&1); then
+    log "Portainer deployed: ${PORTAINER_OUT:0:12}"
+else
+    log "WARNING: Portainer deployment failed: ${PORTAINER_OUT}"
+fi
 
 # --- Install Traefik ---------------------------------------------------------
 log "Deploying Traefik reverse proxy..."
@@ -134,7 +138,11 @@ networks:
     external: true
 EOF
 
-cd /opt/cloverstack/traefik && docker compose up -d 2>/dev/null || log "Traefik setup deferred"
+if TRAEFIK_OUT=$(cd /opt/cloverstack/traefik && docker compose up -d 2>&1); then
+    log "Traefik deployed successfully"
+else
+    log "WARNING: Traefik deployment failed: ${TRAEFIK_OUT}"
+fi
 
 # --- CloverDesktop (Containerized GUI) ----------------------------------------
 if [[ "${ENABLE_CLOVERDESKTOP:-true}" == "true" ]]; then
@@ -190,7 +198,11 @@ done
 if [[ -f "/etc/myclover/modules.d/clovermarket.enabled" ]]; then
     log "Starting CloverMarket..."
     if [[ -f /opt/cloverstack/modules/clovermarket/docker-compose.yml ]]; then
-        cd /opt/cloverstack/modules/clovermarket && docker compose up -d 2>/dev/null || log "CloverMarket start deferred"
+        if MARKET_OUT=$(cd /opt/cloverstack/modules/clovermarket && docker compose up -d 2>&1); then
+            log "CloverMarket deployed successfully"
+        else
+            log "WARNING: CloverMarket deployment failed: ${MARKET_OUT}"
+        fi
     fi
     # Initialize marketplace directories
     mkdir -p /opt/clovermarket/{apps,cache,wizards}
