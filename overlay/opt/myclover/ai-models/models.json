@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "default": "dolphin-x1",
+  "models": [
+    {
+      "id": "phi3:mini",
+      "name": "Phi-3 Mini",
+      "provider": "Microsoft",
+      "params": "3.8B",
+      "description": "Fast, lightweight model for constrained hardware",
+      "min_ram_gb": 4,
+      "vram_gb": 2.5,
+      "ollama_id": "phi3:mini",
+      "hardware_tiers": ["puck", "edge", "edge_pro", "rack", "laptop"]
+    },
+    {
+      "id": "dolphin-x1",
+      "name": "Dolphin-X1-8B",
+      "provider": "dphn (Eric Hartford)",
+      "params": "8B",
+      "description": "Uncensored Llama 3.1 fine-tune — capable, no content restrictions",
+      "min_ram_gb": 8,
+      "vram_gb": 5.0,
+      "modelfile": "/opt/myclover/ai-models/dolphin-x1.Modelfile",
+      "quants": {
+        "Q3_K_L": {"ram_gb": 5.5, "ollama_id": "hf.co/dphn/Dolphin-X1-8B-GGUF:Q3_K_L"},
+        "Q4_K_M": {"ram_gb": 6.5, "ollama_id": "hf.co/dphn/Dolphin-X1-8B-GGUF:Q4_K_M"},
+        "Q5_K_M": {"ram_gb": 7.5, "ollama_id": "hf.co/dphn/Dolphin-X1-8B-GGUF:Q5_K_M"},
+        "Q6_K":   {"ram_gb": 8.5, "ollama_id": "hf.co/dphn/Dolphin-X1-8B-GGUF:Q6_K"},
+        "Q8_0":   {"ram_gb": 10.0, "ollama_id": "hf.co/dphn/Dolphin-X1-8B-GGUF:Q8_0"}
+      },
+      "hardware_map": {
+        "puck": null,
+        "edge": "Q4_K_M",
+        "edge_pro": "Q6_K",
+        "rack": "Q8_0",
+        "laptop": "Q4_K_M"
+      },
+      "hardware_tiers": ["edge", "edge_pro", "rack", "laptop"]
+    },
+    {
+      "id": "llama3.1:8b",
+      "name": "Llama 3.1 8B",
+      "provider": "Meta",
+      "params": "8B",
+      "description": "Meta's flagship open model — strong general performance",
+      "min_ram_gb": 8,
+      "vram_gb": 5.0,
+      "ollama_id": "llama3.1:8b",
+      "hardware_tiers": ["edge", "edge_pro", "rack", "laptop"]
+    }
+  ]
+}
