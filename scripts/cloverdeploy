@@ -116,17 +116,31 @@ print('NOT_FOUND')
         exit 1
     fi
 
-    local image name ports
+    local image name
     image=$(echo "${app_info}" | python3 -c "import json,sys; print(json.load(sys.stdin)['image'])")
     name=$(echo "${app_info}" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
+
+    # Extract ports from catalog
+    local port_list
+    port_list=$(echo "${app_info}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(' '.join(str(p) for p in d.get('ports',[])))")
 
     log "Installing ${name} (${app_id})..."
     log "Pulling image: ${image}"
     docker pull "${image}"
 
-    # Generate compose file
+    # Generate compose file with port mappings
     local compose_dir="${DEPLOY_ROOT}/compose/${app_id}"
     mkdir -p "${compose_dir}"
+
+    # Build ports section
+    local ports_yaml=""
+    if [[ -n "${port_list}" ]]; then
+        ports_yaml="    ports:"
+        for p in ${port_list}; do
+            ports_yaml="${ports_yaml}
+      - \"${p}:${p}\""
+        done
+    fi
 
     cat > "${compose_dir}/docker-compose.yml" <<COMPOSE
 version: '3.8'
@@ -135,6 +149,7 @@ services:
     image: ${image}
     container_name: clover-${app_id}
     restart: unless-stopped
+${ports_yaml}
     volumes:
       - ${app_id}-data:/data
     labels:
@@ -147,6 +162,14 @@ volumes:
 COMPOSE
 
     docker compose -f "${compose_dir}/docker-compose.yml" up -d
+
+    # Open firewall ports
+    if [[ -n "${port_list}" ]]; then
+        for p in ${port_list}; do
+            ufw allow "${p}/tcp" comment "CloverDeploy: ${name}" 2>/dev/null || true
+        done
+        log "Firewall opened for ports: ${port_list}"
+    fi
 
     log "${name} installed and running!"
     log "Manage with: cloverstack-ctl deploy [start|stop|logs|remove] ${app_id}"
@@ -182,6 +205,13 @@ cmd_remove() {
         err "App '${app_id}' is not installed"
         exit 1
     fi
+
+    # Close firewall ports before removal
+    local ports
+    ports=$(grep -oE '"[0-9]+:[0-9]+"' "${compose_dir}/docker-compose.yml" 2>/dev/null | sed 's/"//g' | cut -d: -f1)
+    for p in ${ports}; do
+        ufw delete allow "${p}/tcp" 2>/dev/null || true
+    done
 
     log "Removing ${app_id}..."
     docker compose -f "${compose_dir}/docker-compose.yml" down -v 2>/dev/null || true
