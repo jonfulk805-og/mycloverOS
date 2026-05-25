@@ -47,6 +47,7 @@ OPTIONAL_SCRIPTS=(
     cloverdeploy
     clovermesh
     cloverdesktop
+    cloverstack-firewall
     cloverstrike
     clovervr
 )
