@@ -1,0 +1,90 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Install CloverOS Service Hub
+# Web dashboard + API for managing all CloverStack services, deploy apps,
+# and containerized desktops. Runs on port 7777.
+# =============================================================================
+set -e
+
+echo "[clover-hub] Installing CloverOS Service Hub..."
+
+# --- Create directory structure ---
+mkdir -p /opt/cloverstack/hub
+
+# --- Install the API server ---
+# (clover-hub-api.py and index.html are placed by the overlay)
+# Just verify they exist and set permissions
+if [ -f /opt/cloverstack/hub/clover-hub-api.py ]; then
+    chmod +x /opt/cloverstack/hub/clover-hub-api.py
+    echo "[clover-hub] API server found in overlay"
+else
+    echo "[clover-hub] WARNING: clover-hub-api.py not in overlay, will need manual install"
+fi
+
+# --- Systemd service ---
+cat > /etc/systemd/system/clover-hub.service <<'EOF'
+[Unit]
+Description=CloverOS Service Hub Dashboard
+Documentation=https://myclover.tech
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/cloverstack/hub/clover-hub-api.py
+WorkingDirectory=/opt/cloverstack/hub
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable clover-hub 2>/dev/null || true
+
+# --- Desktop shortcut (system-wide) ---
+mkdir -p /usr/share/applications
+cat > /usr/share/applications/clover-hub.desktop <<'DESKTOP'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CloverOS Service Hub
+Comment=Manage all CloverStack services, apps, and desktops
+Exec=xdg-open http://localhost:7777
+Icon=preferences-system-network
+Terminal=false
+Categories=System;Monitor;Network;
+Keywords=clover;services;docker;dashboard;hub;
+StartupNotify=true
+DESKTOP
+
+# --- Add to default desktop for all editions ---
+# Skeleton directory ensures new users get the shortcut
+mkdir -p /etc/skel/Desktop
+cp /usr/share/applications/clover-hub.desktop /etc/skel/Desktop/
+chmod +x /etc/skel/Desktop/clover-hub.desktop
+
+# Also add to existing clover user desktop
+mkdir -p /home/clover/Desktop
+cp /usr/share/applications/clover-hub.desktop /home/clover/Desktop/
+chmod +x /home/clover/Desktop/clover-hub.desktop
+chown -R 1000:1000 /home/clover/Desktop/ 2>/dev/null || true
+
+# --- Firewall rule ---
+mkdir -p /etc/myclover/firewall-rules.d
+cat >> /etc/myclover/firewall-rules.d/clover-hub.rules 2>/dev/null <<'EOF' || true
+# CloverOS Service Hub -- dashboard port
+ufw allow 7777/tcp comment 'CloverOS Service Hub'
+EOF
+
+# --- Add to MOTD ---
+# Append hub URL to the existing MOTD
+if [ -f /etc/motd ]; then
+    sed -i '/Service Hub/d' /etc/motd
+    sed -i '/After setup/i\  Service Hub: http://<this-ip>:7777' /etc/motd 2>/dev/null || true
+fi
+
+echo "[clover-hub] CloverOS Service Hub installed."
+echo "[clover-hub] Dashboard will be at http://<ip>:7777 after boot."
