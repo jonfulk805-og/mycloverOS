@@ -229,7 +229,7 @@ for script in clovernas-edition clovercreate cloverwall cloverfactory cloverdesk
 done
 
 # CloverNAS / CloverDeploy / CloverMesh CLI scripts
-for script in clovernas cloverdeploy clovermesh; do
+for script in clovernas cloverdeploy clovermesh cloverstack-firewall; do
     if [[ -f "${SCRIPT_DIR}/scripts/${script}" ]]; then
         cp "${SCRIPT_DIR}/scripts/${script}" config/includes.chroot/usr/local/bin/
         chmod +x config/includes.chroot/usr/local/bin/${script}
