@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CloverOS Service Hub</title>
+<style>
+/* ===== RESET & BASE ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--bg2:#111118;--bg3:#191922;--bg4:#22222e;
+  --text:#e0e0e8;--text2:#8888a0;--text3:#555566;
+  --green:#22c55e;--green2:#16a34a;--green-glow:rgba(34,197,94,.25);
+  --red:#ef4444;--red-glow:rgba(239,68,68,.2);
+  --amber:#f59e0b;--amber-glow:rgba(245,158,11,.2);
+  --blue:#3b82f6;--blue-glow:rgba(59,130,246,.15);
+  --purple:#a855f7;--purple-glow:rgba(168,85,247,.15);
+  --gold:#d4a017;--gold-glow:rgba(212,160,23,.2);
+  --cyan:#06b6d4;
+  --border:#2a2a3a;--border2:#333345;
+  --radius:12px;--radius-sm:8px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:"SF Mono","Fira Code",monospace;
+}
+html{font-size:15px}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--font);
+  min-height:100vh;overflow-x:hidden;
+}
+a{color:var(--cyan);text-decoration:none}
+a:hover{text-decoration:underline}
+button{cursor:pointer;font-family:var(--font)}
+
+/* ===== LAYOUT ===== */
+.hub-container{max-width:1400px;margin:0 auto;padding:20px 24px 60px}
+
+/* ===== HEADER ===== */
+.hub-header{
+  text-align:center;padding:32px 0 24px;
+  border-bottom:1px solid var(--border);margin-bottom:28px;
+}
+.hub-logo{
+  width:80px;height:80px;margin:0 auto 16px;
+  background:radial-gradient(circle at 40% 35%,#22c55e 0%,#16a34a 30%,#0d6e2e 60%,#064e1c 100%);
+  border-radius:50%;position:relative;
+  box-shadow:0 0 40px rgba(34,197,94,.3),0 0 80px rgba(34,197,94,.1);
+}
+.hub-logo::after{
+  content:"\2618";position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:44px;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.4);
+}
+.hub-title{
+  font-size:1.8rem;font-weight:700;letter-spacing:-.02em;
+  background:linear-gradient(135deg,#22c55e,#06b6d4);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.hub-subtitle{color:var(--text2);font-size:.9rem;margin-top:4px}
+.hub-ip{
+  display:inline-block;margin-top:10px;padding:4px 14px;
+  background:var(--bg3);border:1px solid var(--border);border-radius:20px;
+  font-family:var(--mono);font-size:.8rem;color:var(--cyan);
+}
+
+/* ===== STATUS BAR ===== */
+.status-bar{
+  display:flex;gap:16px;flex-wrap:wrap;justify-content:center;
+  margin-bottom:28px;
+}
+.stat-pill{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 16px;background:var(--bg2);border:1px solid var(--border);
+  border-radius:20px;font-size:.82rem;
+}
+.stat-pill .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot-green{background:var(--green);box-shadow:0 0 8px var(--green-glow)}
+.dot-amber{background:var(--amber);box-shadow:0 0 8px var(--amber-glow)}
+.dot-red{background:var(--red);box-shadow:0 0 8px var(--red-glow)}
+
+/* ===== FILTER / SEARCH ===== */
+.controls-bar{
+  display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:24px;
+}
+.search-box{
+  flex:1;min-width:200px;padding:10px 16px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);
+  color:var(--text);font-size:.9rem;outline:none;transition:border-color .2s;
+}
+.search-box:focus{border-color:var(--cyan)}
+.search-box::placeholder{color:var(--text3)}
+.filter-btn{
+  padding:8px 16px;background:var(--bg3);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text2);font-size:.82rem;
+  transition:all .2s;
+}
+.filter-btn:hover,.filter-btn.active{
+  background:var(--bg4);border-color:var(--green);color:var(--green);
+}
+
+/* ===== CATEGORY SECTIONS ===== */
+.category-section{margin-bottom:32px}
+.category-header{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:16px;
+}
+.category-icon{
+  width:32px;height:32px;border-radius:var(--radius-sm);
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.1rem;
+}
+.cat-core .category-icon{background:linear-gradient(135deg,#16a34a,#0d6e2e)}
+.cat-productivity .category-icon{background:linear-gradient(135deg,#3b82f6,#1d4ed8)}
+.cat-media .category-icon{background:linear-gradient(135deg,#a855f7,#7c3aed)}
+.cat-networking .category-icon{background:linear-gradient(135deg,#06b6d4,#0284c7)}
+.cat-databases .category-icon{background:linear-gradient(135deg,#f59e0b,#d97706)}
+.cat-monitoring .category-icon{background:linear-gradient(135deg,#ef4444,#dc2626)}
+.cat-security .category-icon{background:linear-gradient(135deg,#ef4444,#991b1b)}
+.cat-home .category-icon{background:linear-gradient(135deg,#22c55e,#15803d)}
+.cat-development .category-icon{background:linear-gradient(135deg,#06b6d4,#0e7490)}
+.cat-ai .category-icon{background:linear-gradient(135deg,#a855f7,#6d28d9)}
+.cat-storage .category-icon{background:linear-gradient(135deg,#f59e0b,#b45309)}
+.cat-desktops .category-icon{background:linear-gradient(135deg,#ec4899,#be185d)}
+.category-name{font-size:1.05rem;font-weight:600;color:var(--text)}
+.category-count{font-size:.78rem;color:var(--text3)}
+
+/* ===== SERVICE CARDS ===== */
+.services-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+  gap:14px;
+}
+.service-card{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px 18px;display:flex;flex-direction:column;gap:10px;
+  transition:border-color .2s,box-shadow .2s;position:relative;overflow:hidden;
+}
+.service-card:hover{border-color:var(--border2);box-shadow:0 4px 24px rgba(0,0,0,.3)}
+.service-card.running{border-left:3px solid var(--green)}
+.service-card.stopped{border-left:3px solid var(--text3)}
+.service-card.enabled-not-running{border-left:3px solid var(--amber)}
+
+.card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.card-info{flex:1;min-width:0}
+.card-name{font-weight:600;font-size:.95rem;display:flex;align-items:center;gap:8px}
+.card-name .status-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+}
+.card-desc{color:var(--text2);font-size:.8rem;margin-top:2px}
+.card-port{
+  font-family:var(--mono);font-size:.75rem;color:var(--text3);margin-top:4px;
+}
+.card-port a{color:var(--cyan);font-weight:500}
+
+/* Toggle switch */
+.toggle-wrap{flex-shrink:0;display:flex;align-items:center;gap:6px}
+.toggle{
+  position:relative;width:40px;height:22px;
+  background:var(--bg4);border:1px solid var(--border);border-radius:11px;
+  cursor:pointer;transition:all .3s;
+}
+.toggle.on{background:var(--green2);border-color:var(--green)}
+.toggle-knob{
+  position:absolute;top:2px;left:2px;width:16px;height:16px;
+  background:#fff;border-radius:50%;transition:transform .3s;
+  box-shadow:0 1px 3px rgba(0,0,0,.3);
+}
+.toggle.on .toggle-knob{transform:translateX(18px)}
+
+/* Card actions */
+.card-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto}
+.card-btn{
+  padding:5px 12px;border:1px solid var(--border);border-radius:6px;
+  background:var(--bg3);color:var(--text2);font-size:.75rem;
+  transition:all .15s;display:flex;align-items:center;gap:4px;
+}
+.card-btn:hover{border-color:var(--cyan);color:var(--cyan)}
+.card-btn.btn-open{border-color:var(--green);color:var(--green)}
+.card-btn.btn-open:hover{background:rgba(34,197,94,.1)}
+.card-btn.btn-pull{border-color:var(--blue);color:var(--blue)}
+.card-btn.btn-pull:hover{background:rgba(59,130,246,.1)}
+.card-btn.btn-danger{border-color:var(--red);color:var(--red)}
+.card-btn.btn-danger:hover{background:rgba(239,68,68,.1)}
+.card-btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* HA badge */
+.ha-badge{
+  position:absolute;top:8px;right:8px;
+  padding:2px 8px;border-radius:4px;
+  background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.3);
+  color:var(--purple);font-size:.65rem;font-weight:600;letter-spacing:.04em;
+}
+
+/* ===== TOAST ===== */
+.toast-container{position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{
+  padding:12px 20px;border-radius:var(--radius-sm);font-size:.85rem;
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  box-shadow:0 8px 32px rgba(0,0,0,.5);max-width:400px;
+  animation:toast-in .3s ease;
+}
+.toast.success{border-color:var(--green);background:rgba(34,197,94,.1)}
+.toast.error{border-color:var(--red);background:rgba(239,68,68,.1)}
+.toast.info{border-color:var(--cyan);background:rgba(6,182,212,.1)}
+@keyframes toast-in{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+
+/* ===== MODAL ===== */
+.modal-overlay{
+  display:none;position:fixed;inset:0;z-index:9000;
+  background:rgba(0,0,0,.7);backdrop-filter:blur(4px);
+  align-items:center;justify-content:center;
+}
+.modal-overlay.open{display:flex}
+.modal{
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;
+}
+.modal h3{font-size:1.1rem;margin-bottom:12px}
+.modal pre{
+  background:var(--bg);padding:12px;border-radius:var(--radius-sm);
+  font-family:var(--mono);font-size:.8rem;color:var(--text2);
+  white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;
+}
+.modal-close{
+  margin-top:16px;padding:8px 20px;background:var(--bg3);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text);float:right;
+}
+
+/* ===== SPINNER ===== */
+.spinner{
+  display:inline-block;width:14px;height:14px;
+  border:2px solid var(--text3);border-top-color:var(--cyan);
+  border-radius:50%;animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ===== RESPONSIVE ===== */
+@media(max-width:600px){
+  .services-grid{grid-template-columns:1fr}
+  .hub-title{font-size:1.4rem}
+  .controls-bar{flex-direction:column}
+}
+</style>
+</head>
+<body>
+
+<div class="hub-container">
+
+  <!-- HEADER -->
+  <header class="hub-header">
+    <div class="hub-logo"></div>
+    <h1 class="hub-title">CloverOS Service Hub</h1>
+    <p class="hub-subtitle">Your stack. Your services. One dashboard.</p>
+    <div class="hub-ip" id="hostIp">Detecting IP...</div>
+  </header>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar" id="statusBar">
+    <div class="stat-pill"><span class="dot dot-green"></span><span id="statRunning">--</span> Running</div>
+    <div class="stat-pill"><span class="dot dot-amber"></span><span id="statEnabled">--</span> Enabled</div>
+    <div class="stat-pill"><span class="dot dot-red"></span><span id="statStopped">--</span> Stopped</div>
+    <div class="stat-pill"><span class="dot" style="background:var(--cyan)"></span><span id="statDesktops">--</span> Desktops</div>
+  </div>
+
+  <!-- CONTROLS -->
+  <div class="controls-bar">
+    <input type="text" class="search-box" id="searchBox" placeholder="Search services...">
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="running">Running</button>
+    <button class="filter-btn" data-filter="enabled">Enabled</button>
+    <button class="filter-btn" data-filter="stopped">Stopped</button>
+    <button class="filter-btn" data-filter="ha">HA Ready</button>
+  </div>
+
+  <!-- SERVICE SECTIONS (rendered by JS) -->
+  <div id="servicesContainer"></div>
+
+</div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3 id="modalTitle">Output</h3>
+    <pre id="modalContent"></pre>
+    <button class="modal-close" onclick="closeModal()">Close</button>
+  </div>
+</div>
+
+<script>
+// ===== State =====
+let HOST_IP = location.hostname;
+let API_BASE = '';
+let allData = null;
+let activeFilter = 'all';
+
+// ===== Init =====
+document.addEventListener('DOMContentLoaded', () => {
+  loadStatus();
+  setInterval(loadStatus, 15000);  // refresh every 15s
+
+  document.getElementById('searchBox').addEventListener('input', renderServices);
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeFilter = btn.dataset.filter;
+      renderServices();
+    });
+  });
+});
+
+// ===== API =====
+async function apiGet(path) {
+  const resp = await fetch(API_BASE + path);
+  return resp.json();
+}
+
+async function apiPost(path, body) {
+  const resp = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
+async function loadStatus() {
+  try {
+    const data = await apiGet('/api/status');
+    HOST_IP = data.ip || location.hostname;
+    allData = data;
+    document.getElementById('hostIp').textContent = HOST_IP + ':7777';
+    updateStats();
+    renderServices();
+  } catch (err) {
+    console.error('Failed to load status:', err);
+    // Fallback: load service definitions only
+    try {
+      const svc = await apiGet('/api/services');
+      allData = {ip: location.hostname, modules: {}, apps: {}, desktops: [], desktop_templates: svc.desktop_templates};
+      // Merge definitions with no status
+      for (const [id, info] of Object.entries(svc.modules)) {
+        allData.modules[id] = {...info, enabled: false, running: false, port_open: false};
+      }
+      for (const [id, info] of Object.entries(svc.apps)) {
+        allData.apps[id] = {...info, installed: false, running: false, port_open: false};
+      }
+      renderServices();
+    } catch (e2) { console.error('Total failure:', e2); }
+  }
+}
+
+function updateStats() {
+  if (!allData) return;
+  let running = 0, enabled = 0, stopped = 0;
+
+  for (const m of Object.values(allData.modules)) {
+    if (m.running || m.port_open) running++;
+    else if (m.enabled) enabled++;
+    else stopped++;
+  }
+  for (const a of Object.values(allData.apps)) {
+    if (a.running || a.port_open) running++;
+    else if (a.installed) enabled++;
+    else stopped++;
+  }
+
+  document.getElementById('statRunning').textContent = running;
+  document.getElementById('statEnabled').textContent = enabled;
+  document.getElementById('statStopped').textContent = stopped;
+  document.getElementById('statDesktops').textContent = (allData.desktops || []).length;
+}
+
+// ===== Render =====
+function renderServices() {
+  if (!allData) return;
+  const search = document.getElementById('searchBox').value.toLowerCase();
+  const container = document.getElementById('servicesContainer');
+
+  // Build category -> services map
+  const categories = {};
+
+  // CloverStack Core modules
+  for (const [id, svc] of Object.entries(allData.modules)) {
+    if (!matchesFilter(svc, 'module') || !matchesSearch(svc, id, search)) continue;
+    const cat = svc.category || 'CloverStack Core';
+    if (!categories[cat]) categories[cat] = [];
+    categories[cat].push({id, ...svc, type: 'module'});
+  }
+
+  // Deploy catalog apps
+  for (const [id, svc] of Object.entries(allData.apps)) {
+    if (!matchesFilter(svc, 'app') || !matchesSearch(svc, id, search)) continue;
+    const cat = svc.category || 'Apps';
+    if (!categories[cat]) categories[cat] = [];
+    categories[cat].push({id, ...svc, type: 'app'});
+  }
+
+  // Desktop templates
+  if (allData.desktop_templates && Object.keys(allData.desktop_templates).length > 0) {
+    const desktopServices = [];
+    for (const [id, dt] of Object.entries(allData.desktop_templates)) {
+      const runInfo = (allData.desktops || []).find(d => d.name && d.name.includes(id));
+      const svc = {
+        name: dt.name, desc: dt.image, port: runInfo ? runInfo.port : null,
+        running: !!runInfo, tier: dt.tier, image: dt.image,
+      };
+      if (!matchesFilter(svc, 'desktop') || !matchesSearch(svc, id, search)) continue;
+      desktopServices.push({id, ...svc, type: 'desktop'});
+    }
+    if (desktopServices.length > 0) categories['Desktops'] = desktopServices;
+  }
+
+  // Category order
+  const catOrder = [
+    'CloverStack Core','Productivity','Media','Networking','Databases',
+    'Monitoring','Security','Home / IoT','Development','AI / ML','Storage','Desktops'
+  ];
+  const catClasses = {
+    'CloverStack Core':'cat-core','Productivity':'cat-productivity','Media':'cat-media',
+    'Networking':'cat-networking','Databases':'cat-databases','Monitoring':'cat-monitoring',
+    'Security':'cat-security','Home / IoT':'cat-home','Development':'cat-development',
+    'AI / ML':'cat-ai','Storage':'cat-storage','Desktops':'cat-desktops',
+  };
+  const catIcons = {
+    'CloverStack Core':'\u2618','Productivity':'\u2699','Media':'\u25B6',
+    'Networking':'\uD83C\uDF10','Databases':'\uD83D\uDDC4','Monitoring':'\uD83D\uDCCA',
+    'Security':'\uD83D\uDEE1','Home / IoT':'\uD83C\uDFE0','Development':'\uD83D\uDCBB',
+    'AI / ML':'\uD83E\uDDE0','Storage':'\uD83D\uDCBE','Desktops':'\uD83D\uDDA5',
+  };
+
+  let html = '';
+  for (const cat of catOrder) {
+    if (!categories[cat] || categories[cat].length === 0) continue;
+    const cls = catClasses[cat] || '';
+    const icon = catIcons[cat] || '\u2699';
+    html += `<div class="category-section ${cls}">
+      <div class="category-header">
+        <div class="category-icon">${icon}</div>
+        <span class="category-name">${cat}</span>
+        <span class="category-count">${categories[cat].length} service${categories[cat].length!==1?'s':''}</span>
+      </div>
+      <div class="services-grid">`;
+
+    for (const svc of categories[cat]) {
+      html += renderCard(svc);
+    }
+    html += '</div></div>';
+  }
+
+  // Any remaining categories
+  for (const cat of Object.keys(categories)) {
+    if (catOrder.includes(cat)) continue;
+    html += `<div class="category-section">
+      <div class="category-header">
+        <div class="category-icon">\u2699</div>
+        <span class="category-name">${cat}</span>
+        <span class="category-count">${categories[cat].length}</span>
+      </div>
+      <div class="services-grid">`;
+    for (const svc of categories[cat]) html += renderCard(svc);
+    html += '</div></div>';
+  }
+
+  container.innerHTML = html || '<p style="text-align:center;color:var(--text3);padding:40px">No services match your filter.</p>';
+}
+
+function renderCard(svc) {
+  const isRunning = svc.running || svc.port_open;
+  const isEnabled = svc.enabled || svc.installed;
+  let cardClass = 'stopped';
+  if (isRunning) cardClass = 'running';
+  else if (isEnabled) cardClass = 'enabled-not-running';
+
+  let dotColor = 'var(--text3)';
+  if (isRunning) dotColor = 'var(--green)';
+  else if (isEnabled) dotColor = 'var(--amber)';
+
+  const port = svc.port;
+  const proto = (port === 9443 || port === 8443) ? 'https' : 'http';
+  const url = port ? `${proto}://${HOST_IP}:${port}` : null;
+  const noWebUI = svc.no_web_ui;
+
+  let portLine = '';
+  if (port) {
+    if (noWebUI) {
+      portLine = `<span>Port ${port} (no web UI)</span>`;
+    } else {
+      portLine = `<a href="${url}" target="_blank" rel="noopener">${HOST_IP}:${port}</a>`;
+    }
+    if (svc.extra_ports) {
+      for (const [label, p] of Object.entries(svc.extra_ports)) {
+        portLine += ` &middot; <a href="http://${HOST_IP}:${p}" target="_blank">${label} :${p}</a>`;
+      }
+    }
+  }
+
+  let actions = '';
+  if (svc.type === 'module') {
+    if (url && !noWebUI) actions += `<button class="card-btn btn-open" onclick="window.open('${url}','_blank')" ${!isRunning?'disabled':''}>Open</button>`;
+    if (isEnabled) {
+      actions += `<button class="card-btn" onclick="moduleAction('restart','${svc.id}',this)">Restart</button>`;
+      actions += `<button class="card-btn btn-danger" onclick="moduleAction('disable','${svc.id}',this)">Disable</button>`;
+    } else {
+      actions += `<button class="card-btn btn-open" onclick="moduleAction('enable','${svc.id}',this)">Enable</button>`;
+    }
+  } else if (svc.type === 'app') {
+    if (url && !noWebUI && isRunning) actions += `<button class="card-btn btn-open" onclick="window.open('${url}','_blank')">Open</button>`;
+    if (svc.image) actions += `<button class="card-btn btn-pull" onclick="dockerPull('${svc.image}',this)">Pull Image</button>`;
+    if (svc.installed || isRunning) {
+      actions += `<button class="card-btn btn-danger" onclick="deployRemove('${svc.id}',this)">Remove</button>`;
+    } else {
+      actions += `<button class="card-btn btn-open" onclick="deployInstall('${svc.id}',this)">Install</button>`;
+    }
+  } else if (svc.type === 'desktop') {
+    if (isRunning && svc.port) {
+      actions += `<button class="card-btn btn-open" onclick="window.open('https://${HOST_IP}:${svc.port}','_blank')">Open Desktop</button>`;
+      actions += `<button class="card-btn btn-danger" onclick="desktopStop('${svc.id}',this)">Stop</button>`;
+    } else {
+      actions += `<button class="card-btn btn-open" onclick="desktopStart('${svc.id}',this)">Launch</button>`;
+    }
+    if (svc.image) actions += `<button class="card-btn btn-pull" onclick="dockerPull('${svc.image}',this)">Pull Image</button>`;
+  }
+
+  let haBadge = '';
+  if (svc.ha) haBadge = '<div class="ha-badge">HA</div>';
+
+  let tierBadge = '';
+  if (svc.tier === 'premium') tierBadge = '<div class="ha-badge" style="background:rgba(212,160,23,.15);border-color:rgba(212,160,23,.3);color:var(--gold)">PREMIUM</div>';
+
+  return `<div class="service-card ${cardClass}" data-id="${svc.id}">
+    ${haBadge}${tierBadge}
+    <div class="card-top">
+      <div class="card-info">
+        <div class="card-name">
+          <span class="status-dot" style="background:${dotColor}"></span>
+          ${svc.name}
+        </div>
+        <div class="card-desc">${svc.desc}</div>
+        ${portLine ? `<div class="card-port">${portLine}</div>` : ''}
+      </div>
+    </div>
+    <div class="card-actions">${actions}</div>
+  </div>`;
+}
+
+function matchesFilter(svc, type) {
+  if (activeFilter === 'all') return true;
+  const isRunning = svc.running || svc.port_open;
+  const isEnabled = svc.enabled || svc.installed;
+  if (activeFilter === 'running') return isRunning;
+  if (activeFilter === 'enabled') return isEnabled && !isRunning;
+  if (activeFilter === 'stopped') return !isRunning && !isEnabled;
+  if (activeFilter === 'ha') return svc.ha;
+  return true;
+}
+
+function matchesSearch(svc, id, search) {
+  if (!search) return true;
+  const hay = `${id} ${svc.name} ${svc.desc} ${svc.category||''} ${svc.image||''}`.toLowerCase();
+  return hay.includes(search);
+}
+
+// ===== Actions =====
+async function moduleAction(action, moduleId, btn) {
+  setLoading(btn, true);
+  try {
+    const result = await apiPost(`/api/module/${action}`, {module: moduleId});
+    if (result.success) {
+      toast(`${moduleId}: ${action} OK`, 'success');
+    } else {
+      toast(`${moduleId}: ${action} failed -- ${result.error}`, 'error');
+      showModal(`${action} ${moduleId}`, result.output + '\n' + result.error);
+    }
+    setTimeout(loadStatus, 1500);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+  setLoading(btn, false);
+}
+
+async function deployInstall(appId, btn) {
+  setLoading(btn, true);
+  toast(`Installing ${appId}... this may take a moment`, 'info');
+  try {
+    const result = await apiPost('/api/deploy/install', {app: appId});
+    if (result.success) {
+      toast(`${appId} installed!`, 'success');
+    } else {
+      toast(`Install failed: ${result.error}`, 'error');
+      showModal(`Install ${appId}`, result.output + '\n' + result.error);
+    }
+    setTimeout(loadStatus, 2000);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+  setLoading(btn, false);
+}
+
+async function deployRemove(appId, btn) {
+  if (!confirm(`Remove ${appId}? This will stop and delete all data.`)) return;
+  setLoading(btn, true);
+  try {
+    const result = await apiPost('/api/deploy/remove', {app: appId});
+    toast(result.success ? `${appId} removed` : `Remove failed`, result.success ? 'success' : 'error');
+    setTimeout(loadStatus, 1500);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+  setLoading(btn, false);
+}
+
+async function dockerPull(image, btn) {
+  setLoading(btn, true);
+  toast(`Pulling ${image}...`, 'info');
+  try {
+    const result = await apiPost('/api/docker/pull', {image});
+    if (result.success) {
+      toast(`Pulled ${image}`, 'success');
+    } else {
+      toast(`Pull failed`, 'error');
+      showModal(`Docker Pull`, result.output + '\n' + result.error);
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+  setLoading(btn, false);
+}
+
+async function desktopStart(desktopId, btn) {
+  setLoading(btn, true);
+  toast(`Launching ${desktopId} desktop...`, 'info');
+  try {
+    const result = await apiPost('/api/desktop/start', {desktop: desktopId});
+    if (result.success) {
+      toast(`${desktopId} desktop launched!`, 'success');
+    } else {
+      toast(`Launch failed`, 'error');
+      showModal(`Desktop Start`, result.output + '\n' + result.error);
+    }
+    setTimeout(loadStatus, 3000);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+  setLoading(btn, false);
+}
+
+async function desktopStop(desktopId, btn) {
+  setLoading(btn, true);
+  try {
+    const result = await apiPost('/api/desktop/stop', {desktop: desktopId});
+    toast(result.success ? `${desktopId} stopped` : `Stop failed`, result.success ? 'success' : 'error');
+    setTimeout(loadStatus, 1500);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+  setLoading(btn, false);
+}
+
+// ===== UI Helpers =====
+function setLoading(btn, loading) {
+  if (!btn) return;
+  if (loading) {
+    btn.dataset.origText = btn.textContent;
+    btn.innerHTML = '<span class="spinner"></span>';
+    btn.disabled = true;
+  } else {
+    btn.textContent = btn.dataset.origText || 'Done';
+    btn.disabled = false;
+  }
+}
+
+function toast(msg, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 4000);
+}
+
+function showModal(title, content) {
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalContent').textContent = content || '(no output)';
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
+document.getElementById('modalOverlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+</script>
+
+</body>
+</html>
