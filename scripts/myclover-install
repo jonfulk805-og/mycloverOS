@@ -225,6 +225,36 @@ log "Setting first-boot provisioning flag..."
 mkdir -p "${INSTALL_ROOT}/var/lib/cloverstack"
 touch "${INSTALL_ROOT}/var/lib/cloverstack/.first-boot"
 
+# --- Pre-configure firewall for first boot -----------------------------------
+log "Pre-configuring firewall for all CloverStack services..."
+if [[ -x "${INSTALL_ROOT}/usr/local/bin/cloverstack-firewall" ]]; then
+    # Run cloverstack-firewall in chroot to open all ports
+    chroot "${INSTALL_ROOT}" /usr/local/bin/cloverstack-firewall open all 2>/dev/null || {
+        # Fallback: configure UFW manually in the installed system
+        warn "cloverstack-firewall failed in chroot — configuring UFW manually"
+        chroot "${INSTALL_ROOT}" bash -c '
+            ufw default deny incoming 2>/dev/null
+            ufw default allow outgoing 2>/dev/null
+            ufw allow 22/tcp 2>/dev/null   # SSH
+            ufw allow 23/tcp 2>/dev/null   # Telnet
+            ufw allow 80/tcp 2>/dev/null   # HTTP
+            ufw allow 443/tcp 2>/dev/null  # HTTPS
+            ufw allow 8080/tcp 2>/dev/null # Setup Wizard
+            ufw allow 8081/tcp 2>/dev/null # NetMon
+            ufw allow 8082/tcp 2>/dev/null # Traefik / Vault
+            ufw allow 8083/tcp 2>/dev/null # Chappie
+            ufw allow 9000/tcp 2>/dev/null # SentryLog
+            ufw allow 9443/tcp 2>/dev/null # Portainer
+            ufw allow 11434/tcp 2>/dev/null # Ollama
+            ufw allow from 172.16.0.0/12 2>/dev/null  # Docker internal
+            ufw --force enable 2>/dev/null
+        ' || true
+    }
+    log "Firewall pre-configured for disk boot"
+else
+    warn "cloverstack-firewall not found — firewall will be configured on first boot by provision"
+fi
+
 # --- Bootloader --------------------------------------------------------------
 log "Installing bootloader..."
 
