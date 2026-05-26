@@ -199,14 +199,26 @@ UFW
 cat > /usr/local/bin/myclover-firewall-init <<'FWINIT'
 #!/bin/bash
 # Activate UFW with mycloverOS defaults (run once on first boot)
+# Uses cloverstack-firewall to open ALL service ports
 set -e
-if command -v ufw &>/dev/null; then
+if [[ -x /usr/local/bin/cloverstack-firewall ]]; then
+    /usr/local/bin/cloverstack-firewall open all
+    ufw --force enable
+    echo "[mycloverOS] Firewall activated (all CloverStack ports open)"
+elif command -v ufw &>/dev/null; then
     ufw --force reset
     ufw allow 22/tcp comment 'SSH'
+    ufw allow 23/tcp comment 'Telnet'
     ufw allow 80/tcp comment 'HTTP'
     ufw allow 443/tcp comment 'HTTPS'
+    ufw allow 8080/tcp comment 'Setup Wizard'
+    ufw allow 8081/tcp comment 'NetMon'
+    ufw allow 8082/tcp comment 'Traefik/Vault'
+    ufw allow 8083/tcp comment 'Chappie'
+    ufw allow 9000/tcp comment 'SentryLog'
+    ufw allow 9443/tcp comment 'Portainer'
+    ufw allow 11434/tcp comment 'Ollama'
     ufw allow 51820/udp comment 'WireGuard'
-    ufw allow from 172.16.0.0/12 to any port 11434 proto tcp comment 'Ollama-Docker'
     ufw allow from 172.16.0.0/12 comment 'Docker-internal'
     ufw default deny incoming
     ufw default allow outgoing
