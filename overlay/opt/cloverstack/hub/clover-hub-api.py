@@ -124,7 +124,7 @@ DEPLOY_CATALOG = {
                        "port": 3001, "category": "Monitoring", "icon": "heart",
                        "image": "louislam/uptime-kuma:latest", "ha": True},
     "portainer":      {"name": "Portainer",       "desc": "Docker management UI",
-                       "port": 9000, "category": "Monitoring", "icon": "box",
+                       "port": 9443, "category": "Monitoring", "icon": "box",
                        "image": "portainer/portainer-ce:latest", "ha": False},
     # Security
     "crowdsec":       {"name": "CrowdSec",        "desc": "Collaborative IPS",
