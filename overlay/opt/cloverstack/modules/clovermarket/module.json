@@ -4,7 +4,7 @@
   "description": "App marketplace for CloverStack — browse, install, and manage CloverApps",
   "version": "1.0.0",
   "category": "platform",
-  "ports": {"web": 8095},
+  "ports": {"web": 8090},
   "url_path": "/market",
   "upstream": "CloverMarket (custom)",
   "upstream_license": "Proprietary",
