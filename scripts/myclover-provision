@@ -238,14 +238,24 @@ fi
 
 # --- Firewall ----------------------------------------------------------------
 log "Configuring firewall..."
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-ufw allow 80/tcp    # HTTP
-ufw allow 443/tcp   # HTTPS
-ufw allow 9443/tcp  # Portainer
-ufw allow 8080/tcp  # mycloverOS Setup Wizard
-ufw allow 8082/tcp  # Traefik Dashboard
+if [[ -x /usr/local/bin/cloverstack-firewall ]]; then
+    # Open ALL CloverStack service ports (system + all modules)
+    /usr/local/bin/cloverstack-firewall open all
+    log "All CloverStack service ports opened via cloverstack-firewall"
+else
+    # Fallback: open minimum ports manually
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow ssh
+    ufw allow 23/tcp    # Telnet
+    ufw allow 80/tcp    # HTTP
+    ufw allow 443/tcp   # HTTPS
+    ufw allow 8080/tcp  # mycloverOS Setup Wizard
+    ufw allow 8082/tcp  # Traefik Dashboard
+    ufw allow 9443/tcp  # Portainer
+    ufw allow 11434/tcp # Ollama API
+    ufw allow from 172.16.0.0/12 comment 'Docker-internal'
+fi
 ufw --force enable
 
 # --- CloverVisor (Hypervisor Blackbox Edition) --------------------------------
