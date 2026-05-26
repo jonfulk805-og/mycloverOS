@@ -62,6 +62,17 @@ button{cursor:pointer;font-family:var(--font)}
   font-family:var(--mono);font-size:.8rem;color:var(--cyan);
 }
 
+/* ===== AUTH BAR ===== */
+.hub-auth-bar{margin-top:12px;display:flex;gap:8px;justify-content:center}
+.auth-btn{
+  padding:6px 14px;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg3);color:var(--text2);font-size:.78rem;cursor:pointer;
+  transition:all .2s;
+}
+.auth-btn:hover{background:var(--bg4);color:var(--text);border-color:var(--border2)}
+.auth-btn-logout{border-color:var(--red);color:var(--red)}
+.auth-btn-logout:hover{background:rgba(239,68,68,.15);color:var(--red)}
+
 /* ===== STATUS BAR ===== */
 .status-bar{
   display:flex;gap:16px;flex-wrap:wrap;justify-content:center;
@@ -695,6 +706,51 @@ function closeModal() {
 document.getElementById('modalOverlay').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeModal();
 });
+
+// ===== Auth =====
+async function doLogout() {
+  await fetch('/api/logout', {method: 'POST'});
+  location.href = '/login';
+}
+
+function showPasswordModal() {
+  showModal('Change Admin Password', `
+    <div style="text-align:left">
+      <label style="display:block;margin-bottom:6px;color:var(--text2);font-size:.85rem">Current Password</label>
+      <input id="pw-current" type="password" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);margin-bottom:14px">
+      <label style="display:block;margin-bottom:6px;color:var(--text2);font-size:.85rem">New Password</label>
+      <input id="pw-new" type="password" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);margin-bottom:14px">
+      <label style="display:block;margin-bottom:6px;color:var(--text2);font-size:.85rem">Confirm New Password</label>
+      <input id="pw-confirm" type="password" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);margin-bottom:16px">
+      <button onclick="doChangePassword()" style="width:100%;padding:10px;border-radius:8px;border:none;background:var(--green);color:#fff;cursor:pointer;font-size:.9rem">Update Password</button>
+      <p id="pw-error" style="color:var(--red);margin-top:10px;font-size:.85rem"></p>
+    </div>
+  `);
+}
+
+async function doChangePassword() {
+  const current = document.getElementById('pw-current').value;
+  const newPw = document.getElementById('pw-new').value;
+  const confirm = document.getElementById('pw-confirm').value;
+  const errEl = document.getElementById('pw-error');
+  errEl.textContent = '';
+  if (!current || !newPw) { errEl.textContent = 'All fields required'; return; }
+  if (newPw !== confirm) { errEl.textContent = 'New passwords do not match'; return; }
+  if (newPw.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
+  const resp = await fetch('/api/change-password', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({current_password: current, new_password: newPw}),
+  });
+  const data = await resp.json();
+  if (data.success) {
+    closeModal();
+    toast('Password updated successfully', 'success');
+  } else {
+    errEl.textContent = data.error || 'Failed to change password';
+  }
+}
+
 </script>
 
 </body>
