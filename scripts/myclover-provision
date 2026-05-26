@@ -26,7 +26,19 @@ log "Creating CloverStack directories..."
 mkdir -p /opt/cloverstack/{modules,data,config,backups}
 mkdir -p /var/lib/cloverstack
 mkdir -p /var/log/cloverstack
-mkdir -p /etc/myclover/modules.d
+mkdir -p /etc/myclover
+
+# Hub authentication config (default password: cloverOS)
+if [ ! -f /etc/myclover/hub.conf ]; then
+  HUB_HASH=$(echo -n "cloverOS" | sha256sum | awk '{print $1}')
+  cat > /etc/myclover/hub.conf << HUBEOF
+{
+  "password_hash": "${HUB_HASH}"
+}
+HUBEOF
+  chmod 600 /etc/myclover/hub.conf
+  echo "[provision] Created hub.conf with default password"
+fi/modules.d
 
 # --- Wait for setup wizard to complete (if running) -------------------------
 if systemctl is-active --quiet myclover-setup-wizard 2>/dev/null; then
