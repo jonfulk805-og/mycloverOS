@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CloverOS — Sign In</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--bg2:#111118;--bg3:#191922;
+  --text:#e0e0e8;--text2:#8888a0;
+  --green:#22c55e;--green2:#16a34a;--green-glow:rgba(34,197,94,.25);
+  --red:#ef4444;
+  --border:#2a2a3a;--border2:#333345;
+  --radius:12px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--font);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;
+}
+/* Animated background */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;
+  background:radial-gradient(ellipse at 50% 0%,rgba(34,197,94,.08) 0%,transparent 60%),
+             radial-gradient(ellipse at 80% 80%,rgba(6,182,212,.05) 0%,transparent 50%);
+}
+.login-card{
+  position:relative;z-index:1;
+  width:380px;max-width:90vw;
+  background:var(--bg2);border:1px solid var(--border);
+  border-radius:16px;padding:40px 32px;
+  box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 40px rgba(34,197,94,.05);
+}
+.login-logo{
+  width:72px;height:72px;margin:0 auto 20px;
+  background:radial-gradient(circle at 40% 35%,#22c55e 0%,#16a34a 30%,#0d6e2e 60%,#064e1c 100%);
+  border-radius:50%;position:relative;
+  box-shadow:0 0 40px rgba(34,197,94,.3),0 0 80px rgba(34,197,94,.1);
+}
+.login-logo::after{
+  content:"\2618";position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:38px;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.4);
+}
+.login-title{
+  text-align:center;font-size:1.4rem;font-weight:700;
+  background:linear-gradient(135deg,#22c55e,#06b6d4);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  margin-bottom:6px;
+}
+.login-subtitle{text-align:center;color:var(--text2);font-size:.85rem;margin-bottom:28px}
+.form-group{margin-bottom:18px}
+.form-label{display:block;color:var(--text2);font-size:.8rem;margin-bottom:6px;font-weight:500}
+.form-input{
+  width:100%;padding:12px 14px;border-radius:10px;
+  border:1px solid var(--border);background:var(--bg3);color:var(--text);
+  font-size:.95rem;outline:none;transition:border-color .2s;
+}
+.form-input:focus{border-color:var(--green)}
+.form-input::placeholder{color:var(--text2)}
+.login-btn{
+  width:100%;padding:12px;border:none;border-radius:10px;
+  background:linear-gradient(135deg,var(--green),var(--green2));
+  color:#fff;font-size:.95rem;font-weight:600;cursor:pointer;
+  transition:all .2s;margin-top:4px;
+}
+.login-btn:hover{box-shadow:0 0 20px var(--green-glow);transform:translateY(-1px)}
+.login-btn:active{transform:translateY(0)}
+.login-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+.login-error{
+  color:var(--red);font-size:.85rem;margin-top:14px;text-align:center;
+  min-height:20px;
+}
+.login-footer{
+  text-align:center;margin-top:24px;padding-top:18px;
+  border-top:1px solid var(--border);color:var(--text2);font-size:.75rem;
+}
+@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+.shake{animation:shake .4s ease}
+</style>
+</head>
+<body>
+<div class="login-card" id="loginCard">
+  <div class="login-logo"></div>
+  <h1 class="login-title">CloverOS Service Hub</h1>
+  <p class="login-subtitle">Admin authentication required</p>
+  <form id="loginForm" onsubmit="handleLogin(event)">
+    <div class="form-group">
+      <label class="form-label">ADMIN PASSWORD</label>
+      <input class="form-input" id="password" type="password" placeholder="Enter password" autofocus autocomplete="current-password">
+    </div>
+    <button class="login-btn" type="submit" id="loginBtn">Sign In</button>
+    <p class="login-error" id="loginError"></p>
+  </form>
+  <div class="login-footer">Secured access &middot; CloverOS</div>
+</div>
+<script>
+async function handleLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('loginBtn');
+  const errEl = document.getElementById('loginError');
+  const pw = document.getElementById('password').value;
+  errEl.textContent = '';
+  if (!pw) { errEl.textContent = 'Please enter your password'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  try {
+    const resp = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      location.href = '/';
+    } else {
+      errEl.textContent = data.error || 'Invalid password';
+      document.getElementById('loginCard').classList.add('shake');
+      setTimeout(() => document.getElementById('loginCard').classList.remove('shake'), 500);
+      document.getElementById('password').value = '';
+      document.getElementById('password').focus();
+    }
+  } catch (err) {
+    errEl.textContent = 'Connection error. Is the hub running?';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sign In';
+}
+</script>
+</body>
+</html>
