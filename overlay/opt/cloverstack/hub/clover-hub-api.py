@@ -13,11 +13,111 @@ import socketserver
 import threading
 import time
 import socket
+import hashlib
+import secrets
+import http.cookies
 
 PORT = 7777
 CLOVERSTACK_ROOT = "/opt/cloverstack"
 MODULES_DIR = "/etc/myclover/modules.d"
 CATALOG_FILE = "/opt/cloverstack/cloverdeploy/catalog/manifest.json"
+HUB_CONF = "/etc/myclover/hub.conf"
+SESSION_TIMEOUT = 86400  # 24 hours
+
+# ---- Authentication --------------------------------------------------------
+
+_sessions = {}       # {token: expiry_timestamp}
+_sessions_lock = threading.Lock()
+
+
+def load_password_hash():
+    """Load the admin password hash from hub.conf, or create default config."""
+    if os.path.exists(HUB_CONF):
+        try:
+            with open(HUB_CONF) as f:
+                conf = json.load(f)
+            if "password_hash" in conf:
+                return conf["password_hash"]
+            # Migrate plaintext password to hash
+            if "password" in conf:
+                pw_hash = hashlib.sha256(conf["password"].encode()).hexdigest()
+                conf["password_hash"] = pw_hash
+                del conf["password"]
+                with open(HUB_CONF, "w") as f:
+                    json.dump(conf, f, indent=2)
+                return pw_hash
+        except Exception:
+            pass
+    # First run — default password is 'cloverOS'
+    pw_hash = hashlib.sha256("cloverOS".encode()).hexdigest()
+    os.makedirs(os.path.dirname(HUB_CONF), exist_ok=True)
+    with open(HUB_CONF, "w") as f:
+        json.dump({"password_hash": pw_hash}, f, indent=2)
+    try:
+        os.chmod(HUB_CONF, 0o600)
+    except Exception:
+        pass
+    return pw_hash
+
+
+PASSWORD_HASH = load_password_hash()
+
+
+def verify_password(password):
+    return hashlib.sha256(password.encode()).hexdigest() == PASSWORD_HASH
+
+
+def create_session():
+    token = secrets.token_hex(32)
+    with _sessions_lock:
+        _sessions[token] = time.time() + SESSION_TIMEOUT
+    return token
+
+
+def validate_session(token):
+    if not token:
+        return False
+    with _sessions_lock:
+        expiry = _sessions.get(token)
+        if expiry and time.time() < expiry:
+            return True
+        _sessions.pop(token, None)
+    return False
+
+
+def destroy_session(token):
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+
+def change_password(new_password):
+    global PASSWORD_HASH
+    PASSWORD_HASH = hashlib.sha256(new_password.encode()).hexdigest()
+    try:
+        conf = {}
+        if os.path.exists(HUB_CONF):
+            with open(HUB_CONF) as f:
+                conf = json.load(f)
+        conf["password_hash"] = PASSWORD_HASH
+        with open(HUB_CONF, "w") as f:
+            json.dump(conf, f, indent=2)
+        os.chmod(HUB_CONF, 0o600)
+    except Exception:
+        pass
+    # Invalidate all existing sessions
+    with _sessions_lock:
+        _sessions.clear()
+
+
+def cleanup_sessions():
+    """Background thread: remove expired sessions every hour."""
+    while True:
+        time.sleep(3600)
+        now = time.time()
+        with _sessions_lock:
+            expired = [t for t, exp in _sessions.items() if now >= exp]
+            for t in expired:
+                del _sessions[t]
 
 # ---- Service registry (modules with web UIs) --------------------------------
 # Format: id -> {name, desc, port, category, icon, docker_image, ha}
@@ -266,11 +366,32 @@ def get_desktop_status():
 
 
 class HubAPIHandler(http.server.BaseHTTPRequestHandler):
-    """API request handler."""
+    """API request handler with session-based authentication."""
 
     def log_message(self, format, *args):
         """Suppress default logging."""
         pass
+
+    def get_session_token(self):
+        """Extract session token from cookie."""
+        cookie_header = self.headers.get("Cookie", "")
+        cookies = http.cookies.SimpleCookie()
+        try:
+            cookies.load(cookie_header)
+        except Exception:
+            return None
+        morsel = cookies.get("hub_session")
+        return morsel.value if morsel else None
+
+    def is_authenticated(self):
+        """Check if the request has a valid session."""
+        return validate_session(self.get_session_token())
+
+    def send_login_redirect(self):
+        """Redirect unauthenticated requests to login page."""
+        self.send_response(302)
+        self.send_header("Location", "/login")
+        self.end_headers()
 
     def send_json(self, data, status=200):
         self.send_response(status)
@@ -290,6 +411,19 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.rstrip("/")
+
+        # Login page is always accessible
+        if path == "/login":
+            self.serve_login_page()
+            return
+
+        # Everything else requires authentication
+        if not self.is_authenticated():
+            if path.startswith("/api/"):
+                self.send_json({"error": "Authentication required"}, 401)
+            else:
+                self.send_login_redirect()
+            return
 
         if path == "/api/status":
             self.handle_status()
@@ -313,7 +447,21 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             data = {}
 
-        if path == "/api/module/enable":
+        # Login endpoint is always accessible
+        if path == "/api/login":
+            self.handle_login(data)
+            return
+
+        # Everything else requires authentication
+        if not self.is_authenticated():
+            self.send_json({"error": "Authentication required"}, 401)
+            return
+
+        if path == "/api/logout":
+            self.handle_logout()
+        elif path == "/api/change-password":
+            self.handle_change_password(data)
+        elif path == "/api/module/enable":
             self.handle_module_action("enable", data)
         elif path == "/api/module/disable":
             self.handle_module_action("disable", data)
@@ -335,6 +483,89 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
             self.handle_desktop_stop(data)
         else:
             self.send_json({"error": "Not found"}, 404)
+
+    # ---- Auth Handlers ------------------------------------------------------
+
+    def handle_login(self, data):
+        password = data.get("password", "")
+        if verify_password(password):
+            token = create_session()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            cookie = http.cookies.SimpleCookie()
+            cookie["hub_session"] = token
+            cookie["hub_session"]["path"] = "/"
+            cookie["hub_session"]["httponly"] = True
+            cookie["hub_session"]["max-age"] = str(SESSION_TIMEOUT)
+            cookie["hub_session"]["samesite"] = "Strict"
+            self.send_header("Set-Cookie", cookie["hub_session"].OutputString())
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode())
+        else:
+            time.sleep(1)  # Rate-limit brute force
+            self.send_json({"success": False, "error": "Invalid password"}, 401)
+
+    def handle_logout(self):
+        token = self.get_session_token()
+        if token:
+            destroy_session(token)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        cookie = http.cookies.SimpleCookie()
+        cookie["hub_session"] = ""
+        cookie["hub_session"]["path"] = "/"
+        cookie["hub_session"]["max-age"] = "0"
+        self.send_header("Set-Cookie", cookie["hub_session"].OutputString())
+        self.end_headers()
+        self.wfile.write(json.dumps({"success": True}).encode())
+
+    def handle_change_password(self, data):
+        current = data.get("current_password", "")
+        new_pw = data.get("new_password", "")
+        if not verify_password(current):
+            self.send_json({"success": False, "error": "Current password is incorrect"}, 403)
+            return
+        if len(new_pw) < 6:
+            self.send_json({"success": False, "error": "Password must be at least 6 characters"}, 400)
+            return
+        change_password(new_pw)
+        # Create a new session for the user
+        token = create_session()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        cookie = http.cookies.SimpleCookie()
+        cookie["hub_session"] = token
+        cookie["hub_session"]["path"] = "/"
+        cookie["hub_session"]["httponly"] = True
+        cookie["hub_session"]["max-age"] = str(SESSION_TIMEOUT)
+        cookie["hub_session"]["samesite"] = "Strict"
+        self.send_header("Set-Cookie", cookie["hub_session"].OutputString())
+        self.end_headers()
+        self.wfile.write(json.dumps({"success": True}).encode())
+
+    def serve_login_page(self):
+        """Serve the login page."""
+        login_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login.html")
+        if os.path.exists(login_path):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            with open(login_path, "r", encoding="utf-8") as f:
+                self.wfile.write(f.read().encode("utf-8"))
+        else:
+            # Inline fallback login page
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"""<!DOCTYPE html><html><head><title>CloverOS Login</title></head>
+            <body style="background:#0a0a0f;color:#e0e0e8;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">
+            <form onsubmit="event.preventDefault();fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({password:document.getElementById('pw').value})}).then(r=>r.json()).then(d=>{if(d.success)location.href='/';
+            else document.getElementById('err').textContent=d.error||'Login failed'})">
+            <h2>CloverOS Service Hub</h2><br>
+            <input id="pw" type="password" placeholder="Admin password" autofocus style="padding:10px;width:250px;border-radius:8px;border:1px solid #333;background:#111;color:#e0e0e8"><br><br>
+            <button type="submit" style="padding:10px 24px;border-radius:8px;border:none;background:#22c55e;color:#fff;cursor:pointer">Sign In</button>
+            <p id="err" style="color:#ef4444;margin-top:12px"></p></form></body></html>""")
 
     # ---- Handlers -----------------------------------------------------------
 
@@ -508,9 +739,14 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def main():
+    # Start session cleanup background thread
+    cleanup_thread = threading.Thread(target=cleanup_sessions, daemon=True)
+    cleanup_thread.start()
+
     server = ThreadedHTTPServer(("0.0.0.0", PORT), HubAPIHandler)
     print(f"[clover-hub] Service Hub API running on port {PORT}")
     print(f"[clover-hub] Dashboard: http://{get_host_ip()}:{PORT}/")
+    print(f"[clover-hub] Default password: cloverOS (change after first login)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
