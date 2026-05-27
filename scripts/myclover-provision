@@ -239,6 +239,7 @@ chmod +x /usr/local/bin/cloverstack-* 2>/dev/null || true
 log "Configuring networking..."
 systemctl enable NetworkManager 2>/dev/null || true
 systemctl enable ssh
+systemctl start ssh 2>/dev/null || true
 
 # WireGuard (if enabled)
 if [[ "${ENABLE_WIREGUARD:-true}" == "true" ]]; then
