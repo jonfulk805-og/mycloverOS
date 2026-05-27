@@ -197,6 +197,11 @@ echo "${USERNAME}:${PASSWORD}" | chroot "${INSTALL_ROOT}" chpasswd
 chroot "${INSTALL_ROOT}" apt-get remove --purge -y live-boot live-config live-tools 2>/dev/null || true
 chroot "${INSTALL_ROOT}" apt-get autoremove -y 2>/dev/null || true
 
+# Ensure openssh-server is installed and enabled on disk
+log "Ensuring SSH is available on first boot..."
+chroot "${INSTALL_ROOT}" apt-get install -y --no-install-recommends openssh-server 2>/dev/null || true
+chroot "${INSTALL_ROOT}" systemctl enable ssh 2>/dev/null || true
+
 # Switch Docker from vfs (live-boot workaround) to overlay2 (proper for ext4 disk)
 log "Configuring Docker for disk storage (overlay2)..."
 if [[ -f "${INSTALL_ROOT}/etc/docker/daemon.json" ]]; then
