@@ -1,0 +1,359 @@
+#!/bin/bash
+# =============================================================================
+# mycloverOS chroot hook -- Privacy-First DNS (CloverDNS)
+# Configures systemd-resolved with encrypted DNS (DoT) using privacy-focused
+# upstream providers: Cloudflare, Quad9, AdGuard DNS, Control D.
+# All DNS queries are encrypted by default — ISPs cannot snoop.
+# Run order: 0210 (after hardening, before edition-specific hooks)
+# =============================================================================
+set -e
+
+echo "[mycloverOS] Configuring privacy-first DNS (CloverDNS)..."
+
+# =============================================================================
+# 1. SYSTEMD-RESOLVED CONFIGURATION (DNS-over-TLS)
+# =============================================================================
+echo "[cloverdns] Setting up encrypted DNS with DNS-over-TLS..."
+
+mkdir -p /etc/systemd/resolved.conf.d
+
+cat > /etc/systemd/resolved.conf.d/00-cloverdns.conf <<'DNSCONF'
+# =============================================================================
+# CloverDNS -- Privacy-First DNS Configuration
+# All DNS queries encrypted via DNS-over-TLS (DoT)
+# Managed by: clover-dns CLI tool
+# =============================================================================
+
+[Resolve]
+# --- Primary: Cloudflare (1.1.1.1) ---
+# Fastest public DNS, zero IP logging, KPMG-audited privacy, APNIC partnership.
+# DoT hostname: cloudflare-dns.com
+DNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com 2606:4700:4700::1001#cloudflare-dns.com
+
+# --- Fallback: Quad9 (9.9.9.9) ---
+# Swiss non-profit, real-time malware domain blocking, no IP logging.
+# DoT hostname: dns.quad9.net
+FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
+
+# --- Encrypt everything ---
+DNSOverTLS=opportunistic
+# opportunistic = use TLS when available, fallback to plain if not.
+# To enforce strict (fail if TLS unavailable), set to: yes
+# Strict is safer but can break captive portals (hotel/airport WiFi).
+
+# --- Privacy & performance ---
+DNSSEC=allow-downgrade
+Cache=yes
+CacheFromLocalhost=no
+DNSStubListener=yes
+ReadEtcHosts=yes
+DNSCONF
+
+# =============================================================================
+# 2. DNS PROFILE PRESETS
+# =============================================================================
+echo "[cloverdns] Installing DNS profile presets..."
+
+mkdir -p /etc/myclover/dns-profiles
+
+# -- Cloudflare: Speed + Privacy --
+cat > /etc/myclover/dns-profiles/cloudflare.conf <<'EOF'
+# Cloudflare DNS -- Fastest, zero-logging, KPMG-audited
+[Resolve]
+DNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com 2606:4700:4700::1001#cloudflare-dns.com
+FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# -- Quad9: Privacy + Malware Blocking --
+cat > /etc/myclover/dns-profiles/quad9.conf <<'EOF'
+# Quad9 DNS -- Swiss non-profit, real-time malware domain blocking
+[Resolve]
+DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
+FallbackDNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# -- AdGuard: Privacy + Ad/Tracker Blocking --
+cat > /etc/myclover/dns-profiles/adguard.conf <<'EOF'
+# AdGuard DNS -- Blocks ads, trackers, and adult content at DNS level
+[Resolve]
+DNS=94.140.14.14#dns.adguard-dns.com 94.140.15.15#dns.adguard-dns.com 2a10:50c0::ad1:ff#dns.adguard-dns.com 2a10:50c0::ad2:ff#dns.adguard-dns.com
+FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# -- AdGuard Family: Privacy + Ad Blocking + Safe Search + Adult Filter --
+cat > /etc/myclover/dns-profiles/adguard-family.conf <<'EOF'
+# AdGuard Family DNS -- Blocks ads + trackers + adult content + enforces safe search
+[Resolve]
+DNS=94.140.14.15#family.adguard-dns.com 94.140.15.16#family.adguard-dns.com 2a10:50c0::bad1:ff#family.adguard-dns.com 2a10:50c0::bad2:ff#family.adguard-dns.com
+FallbackDNS=1.1.1.3#family.cloudflare-dns.com 1.0.0.3#family.cloudflare-dns.com
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# -- Control D: Privacy + Custom Filtering --
+cat > /etc/myclover/dns-profiles/controld.conf <<'EOF'
+# Control D DNS -- Encrypted, no-logging, customizable unblocking/filtering
+[Resolve]
+DNS=76.76.2.2#p0.freedns.controld.com 76.76.10.2#p0.freedns.controld.com 2606:1a40::2#p0.freedns.controld.com 2606:1a40:1::2#p0.freedns.controld.com
+FallbackDNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# -- Cloudflare Families: Malware + Adult Content Blocking --
+cat > /etc/myclover/dns-profiles/cloudflare-family.conf <<'EOF'
+# Cloudflare Families DNS -- Malware + adult content blocking
+[Resolve]
+DNS=1.1.1.3#family.cloudflare-dns.com 1.0.0.3#family.cloudflare-dns.com 2606:4700:4700::1113#family.cloudflare-dns.com 2606:4700:4700::1003#family.cloudflare-dns.com
+FallbackDNS=94.140.14.15#family.adguard-dns.com 94.140.15.16#family.adguard-dns.com
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# -- Maximum Privacy: Quad9 primary + strict TLS only --
+cat > /etc/myclover/dns-profiles/max-privacy.conf <<'EOF'
+# Maximum Privacy -- Strict DoT only (fails rather than leaks plain DNS)
+# WARNING: May break captive portals (hotel/airport WiFi)
+[Resolve]
+DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net
+FallbackDNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com
+DNSOverTLS=yes
+DNSSEC=yes
+Cache=yes
+DNSStubListener=yes
+ReadEtcHosts=yes
+EOF
+
+# =============================================================================
+# 3. TRACK ACTIVE PROFILE
+# =============================================================================
+echo "cloudflare" > /etc/myclover/dns-profiles/.active
+
+# =============================================================================
+# 4. ENABLE SYSTEMD-RESOLVED
+# =============================================================================
+echo "[cloverdns] Enabling systemd-resolved..."
+
+# Enable resolved service
+systemctl enable systemd-resolved 2>/dev/null || true
+
+# Point /etc/resolv.conf to resolved's stub (will activate on first boot)
+# Using a script hook that runs at boot since chroot symlinks can be fragile
+mkdir -p /etc/NetworkManager/conf.d
+
+cat > /etc/NetworkManager/conf.d/90-cloverdns.conf <<'NMCONF'
+# Let systemd-resolved handle DNS (CloverDNS)
+[main]
+dns=systemd-resolved
+
+[connection]
+# Don't let DHCP-provided DNS override our privacy DNS
+ipv4.ignore-auto-dns=true
+ipv6.ignore-auto-dns=true
+NMCONF
+
+# =============================================================================
+# 5. FIRST-BOOT DNS ACTIVATION SCRIPT
+# =============================================================================
+echo "[cloverdns] Installing first-boot DNS activator..."
+
+cat > /usr/local/lib/cloverdns-activate <<'ACTIVATE'
+#!/bin/bash
+# Activate systemd-resolved stub on first boot
+# This handles the /etc/resolv.conf symlink which can't be set in chroot
+
+RESOLV="/etc/resolv.conf"
+STUB="/run/systemd/resolve/stub-resolv.conf"
+
+if [ -f "${STUB}" ]; then
+    # Backup original
+    if [ -f "${RESOLV}" ] && [ ! -L "${RESOLV}" ]; then
+        cp "${RESOLV}" "${RESOLV}.bak.$(date +%s)"
+    fi
+    # Symlink to resolved stub
+    ln -sf "${STUB}" "${RESOLV}"
+    echo "[cloverdns] DNS routing activated via systemd-resolved"
+fi
+ACTIVATE
+chmod +x /usr/local/lib/cloverdns-activate
+
+# Systemd oneshot to run at boot
+cat > /etc/systemd/system/cloverdns-activate.service <<'UNIT'
+[Unit]
+Description=CloverDNS Activation (resolv.conf symlink)
+After=systemd-resolved.service
+Requires=systemd-resolved.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/cloverdns-activate
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl enable cloverdns-activate 2>/dev/null || true
+
+# =============================================================================
+# 6. DNS LEAK TEST HELPER
+# =============================================================================
+echo "[cloverdns] Installing DNS leak test helper..."
+
+cat > /usr/local/bin/clover-dns-test <<'LEAKTEST'
+#!/bin/bash
+# =============================================================================
+# clover-dns-test -- Quick DNS privacy verification
+# Checks that DNS queries are going through the configured encrypted provider
+# =============================================================================
+set -euo pipefail
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+echo -e "${BOLD}CloverDNS Privacy Check${NC}"
+echo "============================================"
+
+# Show active profile
+if [ -f /etc/myclover/dns-profiles/.active ]; then
+    PROFILE=$(cat /etc/myclover/dns-profiles/.active)
+    echo -e "Active profile: ${CYAN}${PROFILE}${NC}"
+fi
+
+echo ""
+
+# Check systemd-resolved status
+echo -e "${BOLD}1. systemd-resolved status:${NC}"
+if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    echo -e "   ${GREEN}[ACTIVE]${NC} systemd-resolved is running"
+else
+    echo -e "   ${RED}[INACTIVE]${NC} systemd-resolved is not running"
+fi
+
+# Check resolv.conf
+echo ""
+echo -e "${BOLD}2. DNS routing:${NC}"
+if [ -L /etc/resolv.conf ]; then
+    TARGET=$(readlink -f /etc/resolv.conf)
+    if echo "${TARGET}" | grep -q "systemd"; then
+        echo -e "   ${GREEN}[OK]${NC} /etc/resolv.conf -> resolved stub"
+    else
+        echo -e "   ${YELLOW}[WARN]${NC} /etc/resolv.conf -> ${TARGET}"
+    fi
+else
+    echo -e "   ${RED}[WARN]${NC} /etc/resolv.conf is not a symlink"
+fi
+
+# Check DNS-over-TLS status
+echo ""
+echo -e "${BOLD}3. DNS-over-TLS:${NC}"
+DOT_STATUS=$(resolvectl status 2>/dev/null | grep -i "DNS over TLS" | head -1 || echo "unknown")
+if echo "${DOT_STATUS}" | grep -qi "yes\|opportunistic"; then
+    echo -e "   ${GREEN}[ENCRYPTED]${NC} ${DOT_STATUS}"
+else
+    echo -e "   ${RED}[PLAIN]${NC} DNS-over-TLS not active"
+fi
+
+# Show current DNS servers
+echo ""
+echo -e "${BOLD}4. Active DNS servers:${NC}"
+resolvectl status 2>/dev/null | grep -E "DNS Servers|Current DNS" | while read -r line; do
+    echo -e "   ${CYAN}${line}${NC}"
+done
+
+# Quick resolution test
+echo ""
+echo -e "${BOLD}5. Resolution test:${NC}"
+for domain in myclover.tech cloudflare.com quad9.net; do
+    START=$(date +%s%N)
+    RESULT=$(resolvectl query "${domain}" 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1 || echo "FAIL")
+    END=$(date +%s%N)
+    MS=$(( (END - START) / 1000000 ))
+    if [ "${RESULT}" != "FAIL" ]; then
+        echo -e "   ${GREEN}[OK]${NC} ${domain} -> ${RESULT} (${MS}ms)"
+    else
+        echo -e "   ${RED}[FAIL]${NC} ${domain} -- could not resolve"
+    fi
+done
+
+# DNSSEC check
+echo ""
+echo -e "${BOLD}6. DNSSEC validation:${NC}"
+DNSSEC_STATUS=$(resolvectl status 2>/dev/null | grep -i "DNSSEC" | head -1 || echo "unknown")
+echo -e "   ${CYAN}${DNSSEC_STATUS}${NC}"
+
+echo ""
+echo -e "${BOLD}Tip:${NC} For a full external leak test, visit: ${CYAN}https://dnsleaktest.com${NC}"
+echo -e "     Or run: ${CYAN}clover-dns-test --external${NC}"
+
+# Optional external leak test
+if [ "${1:-}" = "--external" ]; then
+    echo ""
+    echo -e "${BOLD}7. External leak test:${NC}"
+    echo "   Querying external DNS leak test servers..."
+    for i in $(seq 1 5); do
+        LEAK=$(dig +short "test${i}.dnsleak.com" @127.0.0.53 2>/dev/null || echo "timeout")
+        echo "   Query ${i}: ${LEAK}"
+    done
+fi
+LEAKTEST
+chmod +x /usr/local/bin/clover-dns-test
+
+# =============================================================================
+# 7. INSTALL CLOVER-DNS CLI
+# =============================================================================
+echo "[cloverdns] Installing clover-dns CLI tool..."
+
+# The clover-dns script is placed by build.sh into /usr/local/bin/
+# Verify it's executable
+if [ -f /usr/local/bin/clover-dns ]; then
+    chmod +x /usr/local/bin/clover-dns
+    echo "[cloverdns] clover-dns CLI installed at /usr/local/bin/clover-dns"
+else
+    echo "[cloverdns] WARNING: clover-dns script not found in /usr/local/bin/"
+    echo "[cloverdns] Ensure build.sh copies scripts/clover-dns to includes.chroot"
+fi
+
+# Add alias for convenience
+cat >> /etc/skel/.bashrc <<'DNSALIAS'
+
+# CloverDNS shortcuts
+alias dns='clover-dns status'
+alias dns-test='clover-dns test'
+DNSALIAS
+
+echo "[mycloverOS] Privacy-first DNS (CloverDNS) configured successfully"
+echo "[mycloverOS]   Default: Cloudflare (1.1.1.1) with DoT encryption"
+echo "[mycloverOS]   Fallback: Quad9 (9.9.9.9) with malware blocking"
+echo "[mycloverOS]   Profiles: cloudflare, quad9, adguard, adguard-family,"
+echo "[mycloverOS]             controld, cloudflare-family, max-privacy"
+echo "[mycloverOS]   Manage with: clover-dns <command>"

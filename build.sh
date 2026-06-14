@@ -214,6 +214,12 @@ chmod +x config/includes.chroot/usr/local/bin/cloverstack-*
 chmod +x config/includes.chroot/usr/local/bin/clovermarket* 2>/dev/null || true
 chmod +x config/includes.chroot/usr/local/bin/cloverapp-picker 2>/dev/null || true
 
+# CloverDNS CLI script
+if [[ -f "${SCRIPT_DIR}/scripts/clover-dns" ]]; then
+    cp "${SCRIPT_DIR}/scripts/clover-dns" config/includes.chroot/usr/local/bin/
+    chmod +x config/includes.chroot/usr/local/bin/clover-dns
+fi
+
 # CloverVisor CLI script (hypervisor edition)
 if [[ -f "${SCRIPT_DIR}/scripts/clovervisor" ]]; then
     cp "${SCRIPT_DIR}/scripts/clovervisor" config/includes.chroot/usr/local/bin/
