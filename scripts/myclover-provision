@@ -38,7 +38,7 @@ if [ ! -f /etc/myclover/hub.conf ]; then
 HUBEOF
   chmod 600 /etc/myclover/hub.conf
   echo "[provision] Created hub.conf with default password"
-fi/modules.d
+fi
 
 # --- Wait for setup wizard to complete (if running) -------------------------
 if systemctl is-active --quiet myclover-setup-wizard 2>/dev/null; then
@@ -265,11 +265,34 @@ else
     ufw allow 443/tcp   # HTTPS
     ufw allow 8080/tcp  # mycloverOS Setup Wizard
     ufw allow 8082/tcp  # Traefik Dashboard
+    ufw allow 8843/tcp  # Vaultwarden HTTPS
     ufw allow 9443/tcp  # Portainer
     ufw allow 11434/tcp # Ollama API
     ufw allow from 172.16.0.0/12 comment 'Docker-internal'
 fi
 ufw --force enable
+
+# --- Self-signed TLS cert for CloverStack HTTPS proxies ----------------------
+log "Generating self-signed TLS certificate for CloverStack services..."
+CERT_FILE="/etc/ssl/certs/cloverstack-selfsigned.crt"
+KEY_FILE="/etc/ssl/private/cloverstack-selfsigned.key"
+if [[ ! -f "${CERT_FILE}" ]]; then
+    HOST_IP="$(hostname -I | awk '{print $1}')"
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout "${KEY_FILE}" \
+        -out "${CERT_FILE}" \
+        -subj "/CN=${HOST_IP}" \
+        -addext "subjectAltName=IP:${HOST_IP},DNS:$(hostname)" 2>/dev/null || true
+    chmod 600 "${KEY_FILE}"
+    log "Created self-signed cert at ${CERT_FILE}"
+fi
+
+# --- Enable Vaultwarden nginx reverse proxy -----------------------------------
+if [[ -f /etc/nginx/sites-available/vaultwarden ]]; then
+    ln -sf /etc/nginx/sites-available/vaultwarden /etc/nginx/sites-enabled/vaultwarden
+    nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+    log "Enabled Vaultwarden nginx HTTPS proxy on port 8843"
+fi
 
 # --- CloverVisor (Hypervisor Blackbox Edition) --------------------------------
 if [[ -f /usr/local/bin/clovervisor ]] && [[ -f /etc/myclover/clovervisor.d/hypervisor.conf ]]; then

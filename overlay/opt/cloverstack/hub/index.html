@@ -530,7 +530,7 @@ function renderCard(svc) {
   else if (isEnabled) dotColor = 'var(--amber)';
 
   const port = svc.port;
-  const proto = (port === 9443 || port === 8443 || (port >= 6901 && port <= 6999)) ? 'https' : 'http';
+  const proto = (port === 9443 || port === 8443 || port === 8843 || (port >= 6901 && port <= 6999)) ? 'https' : 'http';
   const url = port ? `${proto}://${HOST_IP}:${port}` : null;
   const noWebUI = svc.no_web_ui;
 

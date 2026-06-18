@@ -28,3 +28,4 @@ source/
 # OS
 .DS_Store
 Thumbs.db
+overlay/opt/cloverstack/hub/__pycache__/
