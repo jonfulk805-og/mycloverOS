@@ -347,6 +347,71 @@ def get_deploy_app_status(app_id):
     return {"installed": installed, "running": running}
 
 
+# ---- UFW Firewall helpers ---------------------------------------------------
+
+_ufw_cache = {"ts": 0, "rules": set(), "active": False}
+_ufw_cache_lock = threading.Lock()
+UFW_CACHE_TTL = 5  # seconds
+
+
+def get_ufw_status():
+    """Get UFW status and set of allowed ports.  Cached for UFW_CACHE_TTL seconds."""
+    with _ufw_cache_lock:
+        if time.time() - _ufw_cache["ts"] < UFW_CACHE_TTL:
+            return _ufw_cache["active"], set(_ufw_cache["rules"])
+
+    rc, out, _ = run_cmd("ufw status numbered", timeout=10)
+    active = "Status: active" in out
+    allowed_ports = set()
+    if active:
+        # Parse lines like:  [ 1] 8081/tcp  ALLOW IN  Anywhere
+        for line in out.splitlines():
+            m = re.search(r"(\d+)(?:/tcp| )\s+ALLOW", line)
+            if m:
+                allowed_ports.add(int(m.group(1)))
+            # Also match ranges or bare port numbers
+            m2 = re.search(r"(\d+):(\d+)(?:/tcp)?\s+ALLOW", line)
+            if m2:
+                for p in range(int(m2.group(1)), int(m2.group(2)) + 1):
+                    allowed_ports.add(p)
+
+    with _ufw_cache_lock:
+        _ufw_cache["ts"] = time.time()
+        _ufw_cache["rules"] = allowed_ports
+        _ufw_cache["active"] = active
+
+    return active, allowed_ports
+
+
+def ufw_allow_port(port):
+    """Open a port in UFW.  Returns (success, message)."""
+    port = int(port)
+    if port < 1 or port > 65535:
+        return False, "Invalid port number"
+    rc, out, err = run_cmd(f"ufw allow {port}/tcp", timeout=15)
+    _invalidate_ufw_cache()
+    return rc == 0, (out or err).strip()
+
+
+def ufw_deny_port(port):
+    """Close (delete allow rule for) a port in UFW.  Returns (success, message)."""
+    port = int(port)
+    if port < 1 or port > 65535:
+        return False, "Invalid port number"
+    # delete the allow rule; use --force to skip interactive prompt
+    rc, out, err = run_cmd(f"ufw delete allow {port}/tcp", timeout=15)
+    # Also try without /tcp in case it was added bare
+    if rc != 0:
+        rc, out, err = run_cmd(f"ufw delete allow {port}", timeout=15)
+    _invalidate_ufw_cache()
+    return rc == 0, (out or err).strip()
+
+
+def _invalidate_ufw_cache():
+    with _ufw_cache_lock:
+        _ufw_cache["ts"] = 0
+
+
 def get_desktop_status():
     """List running desktop containers."""
     rc, out, _ = run_cmd(
@@ -433,6 +498,8 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
             self.handle_services()
         elif path == "/api/desktops":
             self.handle_desktops()
+        elif path == "/api/firewall/status":
+            self.handle_firewall_status()
         elif path == "" or path == "/":
             self.serve_dashboard()
         else:
@@ -481,6 +548,10 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
             self.handle_desktop_start(data)
         elif path == "/api/desktop/stop":
             self.handle_desktop_stop(data)
+        elif path == "/api/firewall/allow":
+            self.handle_firewall_allow(data)
+        elif path == "/api/firewall/deny":
+            self.handle_firewall_deny(data)
         else:
             self.send_json({"error": "Not found"}, 404)
 
@@ -573,15 +644,25 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
         """Full system status."""
         ip = get_host_ip()
 
+        # UFW firewall state
+        ufw_active, ufw_allowed = get_ufw_status()
+
         # Modules
         modules = {}
         for mod_id, info in CLOVERSTACK_MODULES.items():
             status = get_module_status(mod_id)
             port_open = check_port(info["port"])
+            ufw_open = info["port"] in ufw_allowed
+            # Also check extra_ports
+            extra_ufw = {}
+            for label, p in info.get("extra_ports", {}).items():
+                extra_ufw[str(p)] = p in ufw_allowed
             modules[mod_id] = {
                 **info,
                 **status,
                 "port_open": port_open,
+                "ufw_open": ufw_open,
+                "extra_ufw": extra_ufw,
             }
 
         # Deploy apps
@@ -589,10 +670,12 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
         for app_id, info in DEPLOY_CATALOG.items():
             status = get_deploy_app_status(app_id)
             port_open = check_port(info["port"])
+            ufw_open = info["port"] in ufw_allowed
             apps[app_id] = {
                 **info,
                 **status,
                 "port_open": port_open,
+                "ufw_open": ufw_open,
             }
 
         # Desktops
@@ -600,6 +683,7 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
 
         self.send_json({
             "ip": ip,
+            "ufw_active": ufw_active,
             "modules": modules,
             "apps": apps,
             "desktops": desktops,
@@ -717,6 +801,48 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
             "output": out,
             "error": err,
         })
+
+    # ---- Firewall Handlers --------------------------------------------------
+
+    def handle_firewall_status(self):
+        """Return UFW active state and per-port allow status for all services."""
+        active, allowed = get_ufw_status()
+        ports = {}
+        for mod_id, info in CLOVERSTACK_MODULES.items():
+            ports[str(info["port"])] = info["port"] in allowed
+            for label, p in info.get("extra_ports", {}).items():
+                ports[str(p)] = p in allowed
+        for app_id, info in DEPLOY_CATALOG.items():
+            ports[str(info["port"])] = info["port"] in allowed
+        self.send_json({"ufw_active": active, "ports": ports})
+
+    def handle_firewall_allow(self, data):
+        """Open a port through UFW."""
+        port = data.get("port")
+        if not port:
+            self.send_json({"error": "Missing 'port' parameter"}, 400)
+            return
+        try:
+            port = int(port)
+        except (ValueError, TypeError):
+            self.send_json({"error": "Invalid port number"}, 400)
+            return
+        ok, msg = ufw_allow_port(port)
+        self.send_json({"success": ok, "port": port, "message": msg})
+
+    def handle_firewall_deny(self, data):
+        """Close a port through UFW (remove allow rule)."""
+        port = data.get("port")
+        if not port:
+            self.send_json({"error": "Missing 'port' parameter"}, 400)
+            return
+        try:
+            port = int(port)
+        except (ValueError, TypeError):
+            self.send_json({"error": "Invalid port number"}, 400)
+            return
+        ok, msg = ufw_deny_port(port)
+        self.send_json({"success": ok, "port": port, "message": msg})
 
     def serve_dashboard(self):
         """Serve the main HTML dashboard."""

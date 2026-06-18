@@ -193,6 +193,30 @@ button{cursor:pointer;font-family:var(--font)}
 .card-btn.btn-danger:hover{background:rgba(239,68,68,.1)}
 .card-btn:disabled{opacity:.4;cursor:not-allowed}
 
+/* Firewall toggle */
+.fw-toggle-wrap{
+  display:flex;align-items:center;gap:6px;margin-top:4px;
+}
+.fw-toggle{
+  position:relative;width:34px;height:18px;
+  background:var(--bg4);border:1px solid var(--border);border-radius:9px;
+  cursor:pointer;transition:all .3s;flex-shrink:0;
+}
+.fw-toggle.on{background:var(--green2);border-color:var(--green)}
+.fw-toggle.on .fw-knob{transform:translateX(16px)}
+.fw-knob{
+  position:absolute;top:2px;left:2px;width:12px;height:12px;
+  background:#fff;border-radius:50%;transition:transform .3s;
+  box-shadow:0 1px 2px rgba(0,0,0,.3);
+}
+.fw-label{
+  font-size:.7rem;color:var(--text3);display:flex;align-items:center;gap:4px;
+}
+.fw-label svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2}
+.fw-label.open{color:var(--green)}
+.fw-label.closed{color:var(--text3)}
+.fw-inactive{font-size:.7rem;color:var(--text3);font-style:italic;margin-top:4px}
+
 /* HA badge */
 .ha-badge{
   position:absolute;top:8px;right:8px;
@@ -270,6 +294,7 @@ button{cursor:pointer;font-family:var(--font)}
     <div class="stat-pill"><span class="dot dot-amber"></span><span id="statEnabled">--</span> Enabled</div>
     <div class="stat-pill"><span class="dot dot-red"></span><span id="statStopped">--</span> Stopped</div>
     <div class="stat-pill"><span class="dot" style="background:var(--cyan)"></span><span id="statDesktops">--</span> Desktops</div>
+    <div class="stat-pill"><span class="dot" id="ufwDot" style="background:var(--text3)"></span>UFW <span id="statUfw">--</span></div>
   </div>
 
   <!-- CONTROLS -->
@@ -383,6 +408,20 @@ function updateStats() {
   document.getElementById('statEnabled').textContent = enabled;
   document.getElementById('statStopped').textContent = stopped;
   document.getElementById('statDesktops').textContent = (allData.desktops || []).length;
+
+  // UFW status
+  const ufwActive = allData.ufw_active;
+  const ufwDot = document.getElementById('ufwDot');
+  const ufwLabel = document.getElementById('statUfw');
+  if (ufwActive) {
+    ufwDot.style.background = 'var(--green)';
+    ufwDot.style.boxShadow = '0 0 8px var(--green-glow)';
+    ufwLabel.textContent = 'Active';
+  } else {
+    ufwDot.style.background = 'var(--red)';
+    ufwDot.style.boxShadow = '0 0 8px var(--red-glow)';
+    ufwLabel.textContent = 'Inactive';
+  }
 }
 
 // ===== Render =====
@@ -509,6 +548,39 @@ function renderCard(svc) {
     }
   }
 
+  // Firewall toggle
+  const shieldSvg = '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+  let fwLine = '';
+  if (port && allData && allData.ufw_active) {
+    const fwOpen = !!svc.ufw_open;
+    const fwClass = fwOpen ? 'on' : '';
+    const labelClass = fwOpen ? 'open' : 'closed';
+    const labelText = fwOpen ? 'UFW Open' : 'UFW Closed';
+    fwLine = `<div class="fw-toggle-wrap">
+      <div class="fw-toggle ${fwClass}" onclick="toggleFirewall(${port}, ${fwOpen}, this)" title="Toggle UFW port ${port}">
+        <div class="fw-knob"></div>
+      </div>
+      <span class="fw-label ${labelClass}">${shieldSvg} ${labelText}</span>
+    </div>`;
+    // Extra ports firewall toggles
+    if (svc.extra_ports && svc.extra_ufw) {
+      for (const [label, p] of Object.entries(svc.extra_ports)) {
+        const epOpen = !!svc.extra_ufw[String(p)];
+        const epClass = epOpen ? 'on' : '';
+        const epLabelClass = epOpen ? 'open' : 'closed';
+        const epLabelText = epOpen ? 'UFW Open' : 'UFW Closed';
+        fwLine += `<div class="fw-toggle-wrap">
+          <div class="fw-toggle ${epClass}" onclick="toggleFirewall(${p}, ${epOpen}, this)" title="Toggle UFW port ${p}">
+            <div class="fw-knob"></div>
+          </div>
+          <span class="fw-label ${epLabelClass}">${shieldSvg} ${label} :${p} ${epLabelText}</span>
+        </div>`;
+      }
+    }
+  } else if (port && allData && !allData.ufw_active) {
+    fwLine = '<div class="fw-inactive">UFW inactive</div>';
+  }
+
   let actions = '';
   if (svc.type === 'module') {
     if (url && !noWebUI) actions += `<button class="card-btn btn-open" onclick="window.open('${url}','_blank')" ${!isRunning?'disabled':''}>Open</button>`;
@@ -552,6 +624,7 @@ function renderCard(svc) {
         </div>
         <div class="card-desc">${svc.desc}</div>
         ${portLine ? `<div class="card-port">${portLine}</div>` : ''}
+        ${fwLine}
       </div>
     </div>
     <div class="card-actions">${actions}</div>
@@ -669,6 +742,41 @@ async function desktopStop(desktopId, btn) {
     toast(`Error: ${e.message}`, 'error');
   }
   setLoading(btn, false);
+}
+
+// ===== Firewall =====
+async function toggleFirewall(port, currentlyOpen, toggleEl) {
+  const action = currentlyOpen ? 'deny' : 'allow';
+  const confirmMsg = currentlyOpen
+    ? `Close port ${port} in UFW? External access will be blocked.`
+    : `Open port ${port} in UFW? External access will be allowed.`;
+  if (!confirm(confirmMsg)) return;
+
+  // Optimistic UI update
+  const wrap = toggleEl.parentElement;
+  const label = wrap.querySelector('.fw-label');
+  toggleEl.classList.toggle('on');
+  if (label) {
+    label.className = `fw-label ${currentlyOpen ? 'closed' : 'open'}`;
+    const svg = label.querySelector('svg') ? label.querySelector('svg').outerHTML : '';
+    const extraText = label.textContent.replace(/UFW (Open|Closed)/, '').trim();
+    label.innerHTML = `${svg} ${extraText ? extraText + ' ' : ''}${currentlyOpen ? 'UFW Closed' : 'UFW Open'}`;
+  }
+
+  try {
+    const result = await apiPost(`/api/firewall/${action}`, {port});
+    if (result.success) {
+      toast(`Port ${port} ${action === 'allow' ? 'opened' : 'closed'} in UFW`, 'success');
+    } else {
+      toast(`UFW ${action} port ${port} failed: ${result.message}`, 'error');
+      // Revert
+      toggleEl.classList.toggle('on');
+    }
+    setTimeout(loadStatus, 1500);
+  } catch (e) {
+    toast(`Firewall error: ${e.message}`, 'error');
+    toggleEl.classList.toggle('on');
+  }
 }
 
 // ===== UI Helpers =====
