@@ -112,10 +112,69 @@ cmd_disable() {
     log "Disabled: ${mod}"
 }
 
+# --- Per-module secrets -----------------------------------------------------
+# Nothing secret ships in the public repo. Compose reads <module>/.env, which
+# is created here (0600) the first time the module starts.
+SENTRYLOG_ADMIN_SHA256_DEFAULT="8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"  # sha256("admin"), formerly shipped
+SENTRYLOG_LEGACY_PASSWORD_SECRET="cloverstack-sentrylog-secret-minimum-16-chars"                    # formerly shipped fallback
+
+_env_get() {  # _env_get <file> <KEY>
+    [[ -f "$1" ]] || return 0
+    grep -E "^$2=" "$1" | tail -n1 | cut -d= -f2-
+}
+
+_env_set() {  # _env_set <file> <KEY> <VALUE>
+    local file="$1" key="$2" val="$3" tmp
+    tmp="$(mktemp "${file}.XXXXXX")"
+    chmod 600 "${tmp}"
+    [[ -f "${file}" ]] && grep -vE "^${key}=" "${file}" > "${tmp}" || true
+    printf '%s=%s\n' "${key}" "${val}" >> "${tmp}"
+    mv -f "${tmp}" "${file}"
+    chmod 600 "${file}"
+}
+
+ensure_sentrylog_secrets() {
+    local env="${CLOVERSTACK_ROOT}/modules/sentrylog/.env"
+    local pwfile="${CLOVERSTACK_CONFIG}/sentrylog-initial-password"
+    local sha secret pw
+
+    sha="$(_env_get "${env}" SENTRYLOG_ROOT_SHA2)"
+    if [[ -z "${sha}" || "${sha}" == "${SENTRYLOG_ADMIN_SHA256_DEFAULT}" ]]; then
+        pw="$(python3 -c 'import secrets; print(secrets.token_urlsafe(15))')"
+        sha="$(printf '%s' "${pw}" | sha256sum | cut -d' ' -f1)"
+        _env_set "${env}" SENTRYLOG_ROOT_SHA2 "${sha}"
+        mkdir -p "${CLOVERSTACK_CONFIG}"
+        ( umask 077; printf 'username: admin\npassword: %s\n' "${pw}" > "${pwfile}" )
+        chmod 600 "${pwfile}"
+        log "SentryLog: generated a random Graylog admin password."
+        log "SentryLog: read it with: sudo cat ${pwfile}"
+    fi
+
+    secret="$(_env_get "${env}" SENTRYLOG_SECRET)"
+    if [[ -z "${secret}" ]]; then
+        if docker volume inspect sentrylog_sentrylog-mongo-data >/dev/null 2>&1; then
+            # Existing install: Graylog encrypted stored credentials with the old
+            # value, so changing it would break them. Keep it, but say so.
+            _env_set "${env}" SENTRYLOG_SECRET "${SENTRYLOG_LEGACY_PASSWORD_SECRET}"
+            log "SentryLog: WARNING existing install still uses the old public password_secret."
+            log "SentryLog: to rotate it, re-enter stored input/notification credentials afterwards."
+        else
+            _env_set "${env}" SENTRYLOG_SECRET "$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+        fi
+    fi
+}
+
+ensure_module_secrets() {
+    case "$1" in
+        sentrylog) ensure_sentrylog_secrets ;;
+    esac
+}
+
 cmd_start() {
     local mod="$1"
     local compose="${CLOVERSTACK_ROOT}/modules/${mod}/docker-compose.yml"
     if [[ -f "${compose}" ]]; then
+        ensure_module_secrets "${mod}"
         log "Starting: ${mod}"
         docker compose -f "${compose}" up -d
     else

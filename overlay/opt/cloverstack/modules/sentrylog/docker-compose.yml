@@ -26,8 +26,8 @@ services:
     restart: unless-stopped
     depends_on: [graylog-mongo, graylog-opensearch]
     environment:
-      GRAYLOG_PASSWORD_SECRET: ${SENTRYLOG_SECRET:-cloverstack-sentrylog-secret-minimum-16-chars}
-      GRAYLOG_ROOT_PASSWORD_SHA2: ${SENTRYLOG_ROOT_SHA2:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
+      GRAYLOG_PASSWORD_SECRET: ${SENTRYLOG_SECRET:-}
+      GRAYLOG_ROOT_PASSWORD_SHA2: ${SENTRYLOG_ROOT_SHA2:-}
       GRAYLOG_HTTP_BIND_ADDRESS: "0.0.0.0:9000"
       GRAYLOG_ELASTICSEARCH_HOSTS: "http://sentrylog-opensearch:9200"
       GRAYLOG_MONGODB_URI: "mongodb://sentrylog-mongo:27017/graylog"
