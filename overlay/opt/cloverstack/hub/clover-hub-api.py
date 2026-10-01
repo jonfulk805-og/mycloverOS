@@ -21,7 +21,7 @@ PORT = 7777
 CLOVERSTACK_ROOT = "/opt/cloverstack"
 MODULES_DIR = "/etc/myclover/modules.d"
 CATALOG_FILE = "/opt/cloverstack/cloverdeploy/catalog/manifest.json"
-HUB_CONF = "/etc/myclover/hub.conf"
+HUB_CONF = os.environ.get("CLOVER_HUB_CONF", "/etc/myclover/hub.conf")
 SESSION_TIMEOUT = 86400  # 24 hours
 
 # ---- Authentication --------------------------------------------------------
@@ -30,33 +30,80 @@ _sessions = {}       # {token: expiry_timestamp}
 _sessions_lock = threading.Lock()
 
 
-def load_password_hash():
-    """Load the admin password hash from hub.conf, or create default config."""
-    if os.path.exists(HUB_CONF):
-        try:
-            with open(HUB_CONF) as f:
-                conf = json.load(f)
-            if "password_hash" in conf:
-                return conf["password_hash"]
-            # Migrate plaintext password to hash
-            if "password" in conf:
-                pw_hash = hashlib.sha256(conf["password"].encode()).hexdigest()
-                conf["password_hash"] = pw_hash
-                del conf["password"]
-                with open(HUB_CONF, "w") as f:
-                    json.dump(conf, f, indent=2)
-                return pw_hash
-        except Exception:
-            pass
-    # First run — default password is 'cloverOS'
-    pw_hash = hashlib.sha256("cloverOS".encode()).hexdigest()
-    os.makedirs(os.path.dirname(HUB_CONF), exist_ok=True)
-    with open(HUB_CONF, "w") as f:
-        json.dump({"password_hash": pw_hash}, f, indent=2)
+# Where the one-time initial password is written on first run. Root-only.
+# Read it with:  sudo cat /etc/myclover/hub-initial-password
+INITIAL_PW_FILE = os.environ.get("CLOVER_HUB_INITIAL_PW_FILE",
+                                 "/etc/myclover/hub-initial-password")
+
+# Hashes of passwords that were ever shipped as defaults in this public repo.
+# A hub.conf holding one of these is treated as "no password set" and gets a
+# fresh random password, because anyone who read the source knows it.
+_KNOWN_DEFAULT_HASHES = frozenset({
+    hashlib.sha256(b"cloverOS").hexdigest(),
+})
+
+
+def _write_private(path, text):
+    """Create/overwrite a file readable only by its owner (0600)."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(HUB_CONF, 0o600)
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(path, 0o600)
     except Exception:
         pass
+
+
+def _read_conf():
+    try:
+        with open(HUB_CONF, encoding="utf-8") as f:
+            conf = json.load(f)
+        return conf if isinstance(conf, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_conf(conf):
+    _write_private(HUB_CONF, json.dumps(conf, indent=2))
+
+
+def _issue_initial_password(conf, reason):
+    """Generate a random admin password, store its hash, and write the
+    plaintext to INITIAL_PW_FILE so the owner can read it once with sudo."""
+    password = secrets.token_urlsafe(12)
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    conf["password_hash"] = pw_hash
+    conf.pop("password", None)
+    _save_conf(conf)
+    _write_private(INITIAL_PW_FILE, password + "\n")
+    print(f"[clover-hub] {reason}: generated a random admin password.")
+    print(f"[clover-hub] Read it with: sudo cat {INITIAL_PW_FILE}")
+    print("[clover-hub] Change it after first login (Settings > Change Password).")
+    return pw_hash
+
+
+def load_password_hash():
+    """Load the admin password hash from hub.conf.
+
+    There is no built-in default password. On first run (or if hub.conf still
+    holds a password that was once shipped as a default) a random password is
+    generated and written to INITIAL_PW_FILE.
+    """
+    conf = _read_conf() if os.path.exists(HUB_CONF) else {}
+    pw_hash = conf.get("password_hash")
+    if not pw_hash and conf.get("password"):
+        # Migrate plaintext password to hash
+        pw_hash = hashlib.sha256(conf["password"].encode()).hexdigest()
+        conf["password_hash"] = pw_hash
+        del conf["password"]
+        _save_conf(conf)
+    if not pw_hash:
+        return _issue_initial_password(conf, "First run")
+    if pw_hash in _KNOWN_DEFAULT_HASHES:
+        return _issue_initial_password(conf, "Shipped default password detected")
     return pw_hash
 
 
@@ -94,14 +141,16 @@ def change_password(new_password):
     global PASSWORD_HASH
     PASSWORD_HASH = hashlib.sha256(new_password.encode()).hexdigest()
     try:
-        conf = {}
-        if os.path.exists(HUB_CONF):
-            with open(HUB_CONF) as f:
-                conf = json.load(f)
+        conf = _read_conf() if os.path.exists(HUB_CONF) else {}
         conf["password_hash"] = PASSWORD_HASH
-        with open(HUB_CONF, "w") as f:
-            json.dump(conf, f, indent=2)
-        os.chmod(HUB_CONF, 0o600)
+        _save_conf(conf)
+    except Exception:
+        pass
+    # The one-time initial password is no longer valid; don't leave it lying around.
+    try:
+        os.remove(INITIAL_PW_FILE)
+    except FileNotFoundError:
+        pass
     except Exception:
         pass
     # Invalidate all existing sessions
@@ -599,6 +648,9 @@ class HubAPIHandler(http.server.BaseHTTPRequestHandler):
         if len(new_pw) < 6:
             self.send_json({"success": False, "error": "Password must be at least 6 characters"}, 400)
             return
+        if hashlib.sha256(new_pw.encode()).hexdigest() in _KNOWN_DEFAULT_HASHES:
+            self.send_json({"success": False, "error": "That password is publicly known; choose another"}, 400)
+            return
         change_password(new_pw)
         # Create a new session for the user
         token = create_session()
@@ -872,7 +924,8 @@ def main():
     server = ThreadedHTTPServer(("0.0.0.0", PORT), HubAPIHandler)
     print(f"[clover-hub] Service Hub API running on port {PORT}")
     print(f"[clover-hub] Dashboard: http://{get_host_ip()}:{PORT}/")
-    print(f"[clover-hub] Default password: cloverOS (change after first login)")
+    if os.path.exists(INITIAL_PW_FILE):
+        print(f"[clover-hub] Initial password not changed yet: sudo cat {INITIAL_PW_FILE}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
